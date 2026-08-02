@@ -1,16 +1,10 @@
 name: Hangover Wine
 
-# Build Hangover Wine for Termux (aarch64) — 100% from upstream sources.
-# Source:  wine-mirror/wine (official upstream Wine, any tag)
-# Patches: this repo's patches/ directory (15 separate patches)
-# FEX:     FEX-Emu/FEX (official upstream, main branch)
-# Box64:   ptitSeb/box64 (official upstream, main branch)
-
 on:
   workflow_dispatch:
     inputs:
       wine_version:
-        description: 'Wine version (from wine-mirror/wine tags, e.g. 11.14)'
+        description: 'Wine version (e.g. 11.14)'
         type: string
         required: true
         default: '11.14'
@@ -39,79 +33,50 @@ jobs:
   build-fex-box64:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout upstream FEX-Emu/FEX
+      - name: Checkout FEX-Emu/FEX
         run: |
-          FEX_REF="${{ github.event.inputs.fex_ref || 'main' }}"
-          git clone --depth 1 --branch "$FEX_REF" https://github.com/FEX-Emu/FEX.git fex
+          git clone --depth 1 --branch "${{ github.event.inputs.fex_ref || 'main' }}" https://github.com/FEX-Emu/FEX.git fex
           cd fex
-          git submodule update --init --depth 1 \
-            External/xxhash External/zydis External/fmt \
-            Source/Common/cpp-optparse External/drm-headers \
-            External/range-v3 External/rpmalloc External/unordered_dense \
-            External/jemalloc_glibc External/Vulkan-Headers
-          cd External/zydis
-          git submodule update --init --depth 1 dependencies/zycore
-
-      - name: Checkout upstream ptitSeb/box64
-        run: |
-          BOX64_REF="${{ github.event.inputs.box64_ref || 'main' }}"
-          git clone --depth 1 --branch "$BOX64_REF" https://github.com/ptitSeb/box64.git box64
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake ninja-build python3
-
+          git submodule update --init --depth 1 External/xxhash External/zydis External/fmt Source/Common/cpp-optparse External/drm-headers External/range-v3 External/rpmalloc External/unordered_dense External/jemalloc_glibc External/Vulkan-Headers
+          cd External/zydis && git submodule update --init --depth 1 dependencies/zycore
+      - name: Checkout ptitSeb/box64
+        run: git clone --depth 1 --branch "${{ github.event.inputs.box64_ref || 'main' }}" https://github.com/ptitSeb/box64.git box64
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake ninja-build python3
       - name: Download bylaws-llvm-mingw
         run: |
           wget -q "https://github.com/bylaws/llvm-mingw/releases/download/20250920/llvm-mingw-20250920-ucrt-ubuntu-22.04-x86_64.tar.xz" -O /tmp/bylaws.tar.xz
-          mkdir -p /opt/bylaws-llvm-mingw
-          tar -xf /tmp/bylaws.tar.xz -C /opt/bylaws-llvm-mingw --strip-components=1
-
+          mkdir -p /opt/bylaws-llvm-mingw && tar -xf /tmp/bylaws.tar.xz -C /opt/bylaws-llvm-mingw --strip-components=1
       - name: Download mstorsjo-llvm-mingw
         run: |
           wget -q "https://github.com/mstorsjo/llvm-mingw/releases/download/20250319/llvm-mingw-20250319-ucrt-ubuntu-20.04-x86_64.tar.xz" -O /tmp/mstorsjo.tar.xz
-          mkdir -p /opt/mstorsjo-llvm-mingw
-          tar -xf /tmp/mstorsjo.tar.xz -C /opt/mstorsjo-llvm-mingw --strip-components=1
-
-      - name: Build FEX libarm64ecfex.dll
+          mkdir -p /opt/mstorsjo-llvm-mingw && tar -xf /tmp/mstorsjo.tar.xz -C /opt/mstorsjo-llvm-mingw --strip-components=1
+      - name: Build libarm64ecfex.dll
         run: |
           export PATH="/opt/bylaws-llvm-mingw/bin:$PATH"
           cd fex && mkdir -p build_ec && cd build_ec
-          cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-                -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake \
-                -DENABLE_LTO=False -DMINGW_TRIPLE=arm64ec-w64-mingw32 \
-                -DBUILD_TESTING=False ..
+          cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DENABLE_LTO=False -DMINGW_TRIPLE=arm64ec-w64-mingw32 -DBUILD_TESTING=False ..
           cmake --build . --target arm64ecfex -j $(nproc)
-
-      - name: Build FEX libwow64fex.dll
+      - name: Build libwow64fex.dll
         run: |
           export PATH="/opt/bylaws-llvm-mingw/bin:$PATH"
           cd fex && mkdir -p build_pe && cd build_pe
-          cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-                -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake \
-                -DENABLE_LTO=False -DMINGW_TRIPLE=aarch64-w64-mingw32 \
-                -DBUILD_TESTING=False ..
+          cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DENABLE_LTO=False -DMINGW_TRIPLE=aarch64-w64-mingw32 -DBUILD_TESTING=False ..
           cmake --build . --target wow64fex -j $(nproc)
-
-      - name: Build Box64 wowbox64.dll
+      - name: Build wowbox64.dll
         run: |
           export PATH="/opt/mstorsjo-llvm-mingw/bin:$PATH"
           cd box64 && mkdir -p build_pe && cd build_pe
-          cmake -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-                -DARM_DYNAREC=ON -DWOW64=ON ..
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DARM_DYNAREC=ON -DWOW64=ON ..
           cmake --build . --target wowbox64 -j $(nproc)
-
-      - name: Collect all 3 DLLs
+      - name: Collect DLLs
         run: |
           mkdir -p fex-dlls
           cp fex/build_ec/Bin/libarm64ecfex.dll fex-dlls/
           cp fex/build_pe/Bin/libwow64fex.dll fex-dlls/
           find box64/build_pe -name "wowbox64.dll" -exec cp {} fex-dlls/ \;
           ls -lh fex-dlls/
-
-      - name: Upload DLLs artifact
+      - name: Upload DLLs
         uses: actions/upload-artifact@v4
         with:
           name: fex-box64-dlls
@@ -125,55 +90,42 @@ jobs:
       contents: write
       packages: read
     steps:
-      - name: Checkout this repo
+      - name: Checkout
         uses: actions/checkout@v4
-
       - name: Resolve version
         id: ver
-        run: |
-          echo "wine_version=${{ github.event.inputs.wine_version }}" >> "$GITHUB_OUTPUT"
-
+        run: echo "wine_version=${{ github.event.inputs.wine_version }}" >> "$GITHUB_OUTPUT"
       - name: Download DLLs
         uses: actions/download-artifact@v4
         with:
           name: fex-box64-dlls
           path: fex-dlls
-
       - name: Verify DLLs
         run: |
           for dll in libarm64ecfex.dll libwow64fex.dll wowbox64.dll; do
             [ -f "fex-dlls/$dll" ] || { echo "::error::$dll missing"; exit 1; }
           done
-
-      - name: Download Wine source
+      - name: Download Wine
         run: |
           VER="${{ steps.ver.outputs.wine_version }}"
           wget -q "https://github.com/wine-mirror/wine/archive/refs/tags/wine-${VER}.tar.gz" -O /tmp/wine.tar.gz
           echo "wine_sha=$(sha256sum /tmp/wine.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
-
-      - name: Verify all patches
+      - name: Verify patches
         run: |
-          VER="${{ steps.ver.outputs.wine_version }}"
-          mkdir -p /tmp/wine-source
-          tar -xzf /tmp/wine.tar.gz -C /tmp/wine-source --strip-components=1
+          mkdir -p /tmp/wine-source && tar -xzf /tmp/wine.tar.gz -C /tmp/wine-source --strip-components=1
           FAILED=0; PASSED=0
           for patch in $(ls patches/*.patch patches/*.patch.beforehostbuild 2>/dev/null | sort); do
             if patch --dry-run -p1 -F0 --no-backup-if-mismatch -d /tmp/wine-source < "$patch" >/tmp/p.log 2>&1; then
-              echo "  OK    $(basename "$patch")"
-              PASSED=$((PASSED+1))
+              echo "  OK    $(basename "$patch")"; PASSED=$((PASSED+1))
             else
-              echo "  FAIL  $(basename "$patch")"
-              cat /tmp/p.log | sed 's/^/        /'
-              FAILED=$((FAILED+1))
+              echo "  FAIL  $(basename "$patch")"; cat /tmp/p.log | sed 's/^/        /'; FAILED=$((FAILED+1))
             fi
           done
           echo "$PASSED passed, $FAILED failed"
           if [ "$FAILED" -ne 0 ]; then exit 1; fi
-
       - name: Clone termux-packages
         run: git clone --depth=1 https://github.com/termux/termux-packages.git
-
-      - name: Install our build.sh, patches, and DLLs
+      - name: Install our files
         run: |
           PKG_DIR="termux-packages/x11-packages/hangover-wine"
           rm -fv $PKG_DIR/*.patch $PKG_DIR/*.patch.beforehostbuild $PKG_DIR/build.sh
@@ -181,17 +133,13 @@ jobs:
           for p in patches/*.patch patches/*.patch.beforehostbuild; do
             [ -f "$p" ] && cp -v "$p" "$PKG_DIR/$(basename "$p")"
           done
-          mkdir -p "$PKG_DIR/fex-dlls"
-          cp -v fex-dlls/*.dll "$PKG_DIR/fex-dlls/"
-
-      - name: Inject version and SHA256
+          mkdir -p "$PKG_DIR/fex-dlls" && cp -v fex-dlls/*.dll "$PKG_DIR/fex-dlls/"
+      - name: Inject version
         run: |
           PKG_DIR="termux-packages/x11-packages/hangover-wine"
-          VER="${{ steps.ver.outputs.wine_version }}"
-          sed -i "s|__WINE_VERSION__|$VER|g" "$PKG_DIR/build.sh"
+          sed -i "s|__WINE_VERSION__|${{ steps.ver.outputs.wine_version }}|g" "$PKG_DIR/build.sh"
           sed -i "s|__WINE_SHA256__|${{ env.wine_sha }}|g" "$PKG_DIR/build.sh"
-
-      - name: Apply codec toggles
+      - name: Codec toggles
         run: |
           PKG_DIR="termux-packages/x11-packages/hangover-wine"
           [ "${{ github.event.inputs.enable_ffmpeg }}" = "true" ] && sed -i 's/--without-ffmpeg/--with-ffmpeg/' "$PKG_DIR/build.sh"
@@ -202,25 +150,17 @@ jobs:
           EXTRA=$(echo "$EXTRA" | sed 's/^, //')
           [ -n "$EXTRA" ] && sed -i "/^TERMUX_PKG_DEPENDS=/ s/xorg-xrandr/xorg-xrandr, ${EXTRA}/" "$PKG_DIR/build.sh"
           bash -n "$PKG_DIR/build.sh"
-
-      - name: Free up disk space
+      - name: Free disk space
         run: cd termux-packages && export CI=true && ./scripts/free-space.sh && df -h
-
-      - name: Build package
+      - name: Build
         run: |
           cd termux-packages
           sudo systemctl start docker || true
           sudo docker pull ghcr.io/termux/package-builder:latest
-          sudo ./scripts/run-docker.sh ./build-package.sh -a aarch64 -I \
-            x11-packages/hangover-wine 2>&1 | tee build.log || {
-              tail -200 build.log; exit 1; }
-
-      - name: Collect packages
-        run: |
-          mkdir -p artifacts
-          find termux-packages -name "*.deb" -type f -exec cp {} artifacts/ \;
-          ls -la artifacts/
-
+          sudo ./scripts/run-docker.sh ./build-package.sh -a aarch64 -I x11-packages/hangover-wine 2>&1 | tee build.log || {
+            tail -200 build.log; exit 1; }
+      - name: Collect
+        run: mkdir -p artifacts && find termux-packages -name "*.deb" -type f -exec cp {} artifacts/ \; && ls -la artifacts/
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         if: always()
@@ -229,20 +169,13 @@ jobs:
           path: artifacts/
           retention-days: 30
           if-no-files-found: warn
-
-      - name: Upload to release
+      - name: Release
         if: github.event.inputs.upload_release == 'true' && success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VER="${{ steps.ver.outputs.wine_version }}"
           TAG="hangover-wine-${VER}-r${{ github.run_number }}"
-          cat > /tmp/notes.md << EOF
-          Hangover Wine ${VER}
-          Built from: wine-mirror/wine wine-${VER}, FEX-Emu/FEX ${{ github.event.inputs.fex_ref || 'main' }}, ptitSeb/box64 ${{ github.event.inputs.box64_ref || 'main' }}
-          EOF
-          gh release create "$TAG" --title "Hangover Wine ${VER}" \
-            --notes-file /tmp/notes.md --repo "${{ github.repository }}" || true
-          for deb in artifacts/*.deb; do
-            [ -f "$deb" ] && gh release upload "$TAG" "$deb" --repo "${{ github.repository }}" --clobber
-          done
+          echo "Hangover Wine ${VER}" > /tmp/notes.md
+          gh release create "$TAG" --title "Hangover Wine ${VER}" --notes-file /tmp/notes.md --repo "${{ github.repository }}" || true
+          for deb in artifacts/*.deb; do [ -f "$deb" ] && gh release upload "$TAG" "$deb" --repo "${{ github.repository }}" --clobber; done

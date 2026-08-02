@@ -1,16 +1,9 @@
 # build.sh — Termux package recipe for Hangover Wine
-#
-# All sources are 100% upstream:
-#   - Wine:    wine-mirror/wine (official upstream)
-#   - FEX:     FEX-Emu/FEX (official upstream)
-#   - Box64:   ptitSeb/box64 (official upstream)
-
 TERMUX_PKG_HOMEPAGE=https://www.winehq.org
 TERMUX_PKG_DESCRIPTION="A compatibility layer for running Windows programs (Hangover fork)"
 TERMUX_PKG_LICENSE="LGPL-2.1"
 TERMUX_PKG_LICENSE_FILE="LICENSE, LICENSE.OLD, COPYING.LIB"
 TERMUX_PKG_MAINTAINER="@LuKazuu"
-
 TERMUX_PKG_VERSION="__WINE_VERSION__"
 TERMUX_PKG_SRCURL="https://github.com/wine-mirror/wine/archive/refs/tags/wine-${TERMUX_PKG_VERSION}.tar.gz"
 TERMUX_PKG_SHA256="__WINE_SHA256__"
@@ -20,13 +13,11 @@ TERMUX_PKG_ANTI_BUILD_DEPENDS="vulkan-loader"
 TERMUX_PKG_NO_STATICSPLIT=true
 TERMUX_PKG_AUTO_UPDATE=false
 TERMUX_PKG_EXCLUDED_ARCHES="arm, i686, x86_64"
-
 TERMUX_PKG_HOSTBUILD=true
 TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS="
 --without-x
 --disable-tests
 "
-
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 ac_cv_header_linux_userfaultfd_h=no
 ac_cv_header_linux_ntsync_h=no
@@ -85,7 +76,6 @@ enable_tools=yes
 --without-xxf86vm
 --enable-archs=i386,aarch64,arm64ec
 "
-
 _setup_llvm_mingw_toolchain() {
         local _llvm_mingw_version=21
         local _version="20250319"
@@ -101,13 +91,11 @@ _setup_llvm_mingw_toolchain() {
         fi
         export PATH="$_extract_path/bin:$PATH"
 }
-
 termux_step_host_build() {
         _setup_llvm_mingw_toolchain
         "$TERMUX_PKG_SRCDIR/configure" ${TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS}
         make -j "$TERMUX_PKG_MAKE_PROCESSES" __tooldeps__ nls/all
 }
-
 termux_step_pre_configure() {
         _setup_llvm_mingw_toolchain
         CPPFLAGS="${CPPFLAGS/-Oz/}"
@@ -120,11 +108,9 @@ termux_step_pre_configure() {
         LDFLAGS+=" -landroid-spawn"
         LDFLAGS+=" -Wl,--rosegment"
 }
-
 termux_step_make() {
         make -j $TERMUX_PKG_MAKE_PROCESSES
 }
-
 termux_step_make_install() {
         make -j $TERMUX_PKG_MAKE_PROCESSES install
         mkdir -p $TERMUX_PREFIX/bin
@@ -134,39 +120,26 @@ exec $TERMUX_PREFIX/opt/hangover-wine/bin/wine "\$@"
 EOF
         chmod +x $TERMUX_PREFIX/bin/hangover-wine
 }
-
 termux_step_post_make_install() {
         local _dll_dir="${TERMUX_PKG_BUILDER_DIR}/fex-dlls"
         if [ ! -d "$_dll_dir" ]; then
-                echo "ERROR: $_dll_dir does not exist (FEX DLLs not provided)" >&2
-                exit 1
+                echo "ERROR: $_dll_dir does not exist" >&2; exit 1
         fi
-
         local _dll
         for _dll in wowbox64.dll libwow64fex.dll libarm64ecfex.dll; do
                 if [ -f "$_dll_dir/$_dll" ]; then
                         install -Dm644 "$_dll_dir/$_dll" \
                                 "$TERMUX_PREFIX"/opt/hangover-wine/lib/wine/aarch64-windows/$_dll
-                        echo "Installed: $_dll ($(stat -c%s "$_dll_dir/$_dll") bytes)"
                 else
-                        echo "ERROR: $_dll not found in $_dll_dir" >&2
-                        exit 1
+                        echo "ERROR: $_dll not found" >&2; exit 1
                 fi
         done
-
         mkdir -p "$TERMUX_PREFIX"/share/doc/hangover \
                  "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex \
                  "$TERMUX_PREFIX"/share/doc/hangover-libwow64fex \
                  "$TERMUX_PREFIX"/share/doc/hangover-wowbox64
-
-        cp "$TERMUX_PKG_SRCDIR/LICENSE" \
-           "$TERMUX_PREFIX"/share/doc/hangover/copyright
-
-        curl -L "https://raw.githubusercontent.com/FEX-Emu/FEX/main/LICENSE" \
-             -o "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex/copyright
-        cp "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex/copyright \
-           "$TERMUX_PREFIX"/share/doc/hangover-libwow64fex/copyright
-
-        curl -L "https://raw.githubusercontent.com/ptitSeb/box64/main/LICENSE" \
-             -o "$TERMUX_PREFIX"/share/doc/hangover-wowbox64/copyright
+        cp "$TERMUX_PKG_SRCDIR/LICENSE" "$TERMUX_PREFIX"/share/doc/hangover/copyright
+        curl -L "https://raw.githubusercontent.com/FEX-Emu/FEX/main/LICENSE" -o "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex/copyright
+        cp "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex/copyright "$TERMUX_PREFIX"/share/doc/hangover-libwow64fex/copyright
+        curl -L "https://raw.githubusercontent.com/ptitSeb/box64/main/LICENSE" -o "$TERMUX_PREFIX"/share/doc/hangover-wowbox64/copyright
 }

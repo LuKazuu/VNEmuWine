@@ -1673,15 +1673,10 @@ index 551771e..5759c0c 100644
 diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
 --- a/include/wine/server_protocol.h
 +++ b/include/wine/server_protocol.h
-@@ -6041,6 +6041,24 @@
+@@ -6041,6 +6041,19 @@
  };
  
  
-+/* Magic value placed in init_first_thread.inproc_device to signal that the
-+ * server is using esync (eventfd-based) in-process synchronization and that
-+ * the in-flight fd is the esync shm fd. The client detects this and calls
-+ * esync_init(). Real PIDs (used as the magic for ntsync) are well below
-+ * this value so there is no collision. */
 +#define ESYNC_USED_BY_SERVER 0x7eadeeee
 +
 +enum esync_type
@@ -1698,7 +1693,7 @@ diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
  enum inproc_sync_type
  {
      INPROC_SYNC_UNKNOWN   = 0,
-@@ -6061,6 +6079,7 @@
+@@ -6061,6 +6074,7 @@
      struct reply_header __header;
      int           type;
      unsigned int access;
@@ -1706,7 +1701,7 @@ diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
  };
  
  
-@@ -6074,7 +6093,7 @@
+@@ -6074,7 +6088,7 @@
  {
      struct reply_header __header;
      obj_handle_t handle;
@@ -1715,7 +1710,7 @@ diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
  };
  
  
-@@ -7177,6 +7196,6 @@
+@@ -7177,6 +7191,6 @@
      struct alpc_create_port_reply alpc_create_port_reply;
  };
  
@@ -2195,7 +2190,8 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
 +            return NULL;
 +        }
 +        return event;
-+    }
+     }
+-    return event;
 +#ifdef NTSYNC_IOC_EVENT_READ
 +    {
 +        struct ntsync_event_args args = {.signaled = signaled, .manual = manual};
@@ -2211,8 +2207,7 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
 +            return NULL;
 +        }
 +        return event;
-     }
--    return event;
++    }
 +#else
 +    return NULL;
 +#endif
@@ -2303,8 +2298,7 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
 +            return NULL;
 +        }
 +        return sem;
-     }
--    return sem;
++    }
 +#ifdef NTSYNC_IOC_EVENT_READ
 +    {
 +        struct ntsync_sem_args args = {.count = initial, .max = max};
@@ -2320,7 +2314,8 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
 +            return NULL;
 +        }
 +        return sem;
-+    }
+     }
+-    return sem;
 +#else
 +    return NULL;
 +#endif
@@ -2387,6 +2382,15 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
      }
  
      release_object( sync );
+@@ -267,7 +385,7 @@
+ {
+ }
+ 
+-static int get_obj_inproc_sync( struct object *obj, int *type )
++static int get_obj_inproc_sync( struct object *obj, int *type, unsigned int *esync_shm_idx )
+ {
+     return -1;
+ }
 @@ -283,8 +401,16 @@
  
      reply->access = get_handle_access( current->process, req->handle );
