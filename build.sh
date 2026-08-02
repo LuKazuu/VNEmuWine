@@ -1,12 +1,9 @@
-# ─────────────────────────────────────────────────────────────────────────────
 # build.sh — Termux package recipe for Hangover Wine
 #
 # All sources are 100% upstream:
 #   - Wine:    wine-mirror/wine (official upstream)
 #   - FEX:     FEX-Emu/FEX (official upstream)
 #   - Box64:   ptitSeb/box64 (official upstream)
-#   - Patches: this repo's patches/ directory (Hangover customizations)
-# ─────────────────────────────────────────────────────────────────────────────
 
 TERMUX_PKG_HOMEPAGE=https://www.winehq.org
 TERMUX_PKG_DESCRIPTION="A compatibility layer for running Windows programs (Hangover fork)"
@@ -14,9 +11,7 @@ TERMUX_PKG_LICENSE="LGPL-2.1"
 TERMUX_PKG_LICENSE_FILE="LICENSE, LICENSE.OLD, COPYING.LIB"
 TERMUX_PKG_MAINTAINER="@LuKazuu"
 
-# Injected by the workflow (placeholder, sed-replaced before building).
 TERMUX_PKG_VERSION="__WINE_VERSION__"
-
 TERMUX_PKG_SRCURL="https://github.com/wine-mirror/wine/archive/refs/tags/wine-${TERMUX_PKG_VERSION}.tar.gz"
 TERMUX_PKG_SHA256="__WINE_SHA256__"
 TERMUX_PKG_DEPENDS="fontconfig, freetype, krb5, libandroid-spawn, libc++, libgmp, libgnutls, libxcb, libxcomposite, libxcursor, libxfixes, libxrender, opengl, pulseaudio, sdl2, vulkan-loader, xorg-xrandr"
@@ -34,6 +29,7 @@ TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS="
 
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 ac_cv_header_linux_userfaultfd_h=no
+ac_cv_header_linux_ntsync_h=no
 ac_cv_path_GRADLE=no
 enable_wineandroid_drv=no
 enable_tools=yes
@@ -158,7 +154,6 @@ termux_step_post_make_install() {
                 fi
         done
 
-        # Install LICENSE/copyright files from upstream repos.
         mkdir -p "$TERMUX_PREFIX"/share/doc/hangover \
                  "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex \
                  "$TERMUX_PREFIX"/share/doc/hangover-libwow64fex \

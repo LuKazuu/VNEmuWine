@@ -1,16 +1,5 @@
-From: AndreRH <AndreRH@users.noreply.github.com>
-Subject: [PATCH] hangover: misc Android/Termux adjustments
-
-- build: append " (Hangover)" to the wine_build version string
-- ntdll/server: warn if host page size != 4096 (Hangover wiki ref)
-- ntdll/virtual: cap wow64 allocations to 4 GB for compatibility
-- server/mapping: add free_available_high_map_addr() helper and use it
-  in init_memory(); also change the low map address from 0x60000000 to
-  0x4000000000 to avoid conflicts with Android's memory layout
-
-Extracted from AndreRH/wine tag hangover-11.9 vs wine-mirror/wine-11.9,
-with the Android low-address fix (ex-0007-android-memoryfix.patch)
-merged into the init_memory hunk to avoid patch-ordering conflicts.
+From: AndreRH
+Subject: [PATCH] hangover: misc
 
 ---
 diff --git a/configure.ac b/configure.ac
@@ -99,7 +88,7 @@ index a53b6b6..2ee4831 100644
      host_page_mask = sysconf( _SC_PAGESIZE ) - 1;
 -    free_map_addr( 0x60000000, 0x1c000000 );
 -    free_map_addr( 0x600000000000, 0x100000000000 );
-+    free_map_addr( 0x4000000000, 0x1000000000 ); /* Android fix: avoid low 32-bit conflict */
++    free_map_addr( 0x4000000000, 0x1000000000 ); /* Android fix */
 +    free_available_high_map_addr( 0x600000000000, 0x100000000000 );
  }
  

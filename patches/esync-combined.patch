@@ -1723,7 +1723,6 @@ diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
 +#define SERVER_PROTOCOL_VERSION 958
  
  #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
-
 diff --git a/server/Makefile.in b/server/Makefile.in
 index 84a6bd7..fbb3af8 100644
 --- a/server/Makefile.in
@@ -2086,75 +2085,301 @@ index cbc7af1..2ab4bff 100644
  }
  
 diff --git a/server/inproc_sync.c b/server/inproc_sync.c
-index ef68ee0..874f01c 100644
 --- a/server/inproc_sync.c
 +++ b/server/inproc_sync.c
-@@ -33,29 +33,30 @@
+@@ -33,6 +33,12 @@
  #include "thread.h"
  #include "user.h"
  
 +#include "esync.h"
 +
- #ifdef HAVE_LINUX_NTSYNC_H
- # include <linux/ntsync.h>
- #endif
- 
--#ifdef NTSYNC_IOC_EVENT_READ
 +#ifdef HAVE_SYS_EVENTFD_H
 +# include <sys/eventfd.h>
 +#endif
- 
- #include <fcntl.h>
--#include <sys/ioctl.h>
--#include <sys/stat.h>
- #include <unistd.h>
- 
--int get_inproc_device_fd(void)
--{
--    static int fd = -2;
--    if (fd == -2) fd = open( "/dev/ntsync", O_CLOEXEC | O_RDONLY );
--    return fd;
--}
-+/* The struct, ops table, and helpers below are shared between the esync and
-+ * ntsync backends. They must always be compiled, regardless of whether
-+ * NTSYNC_IOC_EVENT_READ is defined. The esync backend only needs <sys/eventfd.h>
-+ * and works on Android where /dev/ntsync does not exist. */
- 
- struct inproc_sync
- {
++
+ #ifdef HAVE_LINUX_NTSYNC_H
+ # include <linux/ntsync.h>
+ #endif
+@@ -56,6 +62,7 @@
      struct object          obj;  /* object header */
      enum inproc_sync_type  type;
      int                    fd;
-+    unsigned int           esync_shm_idx;  /* esync shm index (0 if not esync) */
++    unsigned int           esync_shm_idx;
      struct list            entry;
  };
  
-@@ -206,23 +352,7 @@ static int inproc_sync_signal( struct object *obj, unsigned int access, int sign
-     return 1;
+@@ -82,78 +89,170 @@
+ 
+ struct inproc_sync *create_inproc_internal_sync( int manual, int signaled )
+ {
+-    struct ntsync_event_args args = {.signaled = signaled, .manual = manual};
+     struct inproc_sync *event;
+ 
+-    if (!(event = alloc_object( &inproc_sync_ops ))) return NULL;
+-    event->type = INPROC_SYNC_INTERNAL;
+-    event->fd   = ioctl( get_inproc_device_fd(), NTSYNC_IOC_CREATE_EVENT, &args );
+-    list_init( &event->entry );
+-
+-    if (event->fd == -1)
+-    {
+-        set_error( STATUS_TOO_MANY_OPENED_FILES );
+-        release_object( event );
+-        return NULL;
++    if (do_esync())
++    {
++        if (!(event = alloc_object( &inproc_sync_ops ))) return NULL;
++        event->esync_shm_idx = 0;
++        event->type = manual ? ESYNC_MANUAL_SERVER : ESYNC_AUTO_SERVER;
++        event->fd = eventfd( signaled ? 1 : 0, EFD_CLOEXEC | EFD_NONBLOCK );
++        list_init( &event->entry );
++        if (event->fd != -1)
++            event->esync_shm_idx = esync_alloc_shm( event->fd, event->type, signaled, 0 );
++        if (event->fd == -1)
++        {
++            set_error( STATUS_TOO_MANY_OPENED_FILES );
++            release_object( event );
++            return NULL;
++        }
++        return event;
+     }
+-    return event;
++#ifdef NTSYNC_IOC_EVENT_READ
++    {
++        struct ntsync_event_args args = {.signaled = signaled, .manual = manual};
++        if (!(event = alloc_object( &inproc_sync_ops ))) return NULL;
++        event->esync_shm_idx = 0;
++        event->type = INPROC_SYNC_INTERNAL;
++        event->fd   = ioctl( get_inproc_device_fd(), NTSYNC_IOC_CREATE_EVENT, &args );
++        list_init( &event->entry );
++        if (event->fd == -1)
++        {
++            set_error( STATUS_TOO_MANY_OPENED_FILES );
++            release_object( event );
++            return NULL;
++        }
++        return event;
++    }
++#else
++    return NULL;
++#endif
  }
  
--static void inproc_sync_destroy( struct object *obj )
--{
--    struct inproc_sync *sync = (struct inproc_sync *)obj;
--    assert( obj->ops == &inproc_sync_ops );
--    list_remove( &sync->entry );
--    close( sync->fd );
--}
+ struct inproc_sync *create_inproc_event_sync( int manual, int signaled )
+ {
+-    struct ntsync_event_args args = {.signaled = signaled, .manual = manual};
+     struct inproc_sync *event;
+ 
+-    if (!(event = alloc_object( &inproc_sync_ops ))) return NULL;
+-    event->type = INPROC_SYNC_EVENT;
+-    event->fd   = ioctl( get_inproc_device_fd(), NTSYNC_IOC_CREATE_EVENT, &args );
+-    list_init( &event->entry );
 -
--void abandon_inproc_mutexes( thread_id_t tid )
--{
--    struct inproc_sync *mutex;
+-    if (event->fd == -1)
+-    {
+-        set_error( STATUS_TOO_MANY_OPENED_FILES );
+-        release_object( event );
+-        return NULL;
++    if (do_esync())
++    {
++        if (!(event = alloc_object( &inproc_sync_ops ))) return NULL;
++        event->esync_shm_idx = 0;
++        event->type = manual ? ESYNC_MANUAL_EVENT : ESYNC_AUTO_EVENT;
++        event->fd = eventfd( signaled ? 1 : 0, EFD_CLOEXEC | EFD_NONBLOCK );
++        list_init( &event->entry );
++        if (event->fd != -1)
++            event->esync_shm_idx = esync_alloc_shm( event->fd, event->type, signaled, 0 );
++        if (event->fd == -1)
++        {
++            set_error( STATUS_TOO_MANY_OPENED_FILES );
++            release_object( event );
++            return NULL;
++        }
++        return event;
++    }
++#ifdef NTSYNC_IOC_EVENT_READ
++    {
++        struct ntsync_event_args args = {.signaled = signaled, .manual = manual};
++        if (!(event = alloc_object( &inproc_sync_ops ))) return NULL;
++        event->esync_shm_idx = 0;
++        event->type = INPROC_SYNC_EVENT;
++        event->fd   = ioctl( get_inproc_device_fd(), NTSYNC_IOC_CREATE_EVENT, &args );
++        list_init( &event->entry );
++        if (event->fd == -1)
++        {
++            set_error( STATUS_TOO_MANY_OPENED_FILES );
++            release_object( event );
++            return NULL;
++        }
++        return event;
+     }
+-    return event;
++#else
++    return NULL;
++#endif
+ }
+ 
+ struct inproc_sync *create_inproc_mutex_sync( thread_id_t owner, unsigned int count )
+ {
+-    struct ntsync_mutex_args args = {.owner = owner, .count = count};
+     struct inproc_sync *mutex;
+ 
+-    if (!(mutex = alloc_object( &inproc_sync_ops ))) return NULL;
+-    mutex->type = INPROC_SYNC_MUTEX;
+-    mutex->fd   = ioctl( get_inproc_device_fd(), NTSYNC_IOC_CREATE_MUTEX, &args );
+-    list_add_tail( &inproc_mutexes, &mutex->entry );
 -
--    LIST_FOR_EACH_ENTRY( mutex, &inproc_mutexes, struct inproc_sync, entry )
--        ioctl( mutex->fd, NTSYNC_IOC_MUTEX_KILL, &tid );
--}
+-    if (mutex->fd == -1)
+-    {
+-        set_error( STATUS_TOO_MANY_OPENED_FILES );
+-        release_object( mutex );
+-        return NULL;
++    if (do_esync())
++    {
++        if (!(mutex = alloc_object( &inproc_sync_ops ))) return NULL;
++        mutex->esync_shm_idx = 0;
++        mutex->type = ESYNC_MUTEX;
++        mutex->fd = eventfd( owner == 0 ? 1 : 0, EFD_CLOEXEC | EFD_NONBLOCK );
++        list_add_tail( &inproc_mutexes, &mutex->entry );
++        if (mutex->fd != -1)
++            mutex->esync_shm_idx = esync_alloc_shm( mutex->fd, mutex->type, owner == 0 ? 1 : 0, 0 );
++        if (mutex->fd == -1)
++        {
++            set_error( STATUS_TOO_MANY_OPENED_FILES );
++            release_object( mutex );
++            return NULL;
++        }
++        return mutex;
+     }
+-    return mutex;
++#ifdef NTSYNC_IOC_EVENT_READ
++    {
++        struct ntsync_mutex_args args = {.owner = owner, .count = count};
++        if (!(mutex = alloc_object( &inproc_sync_ops ))) return NULL;
++        mutex->esync_shm_idx = 0;
++        mutex->type = INPROC_SYNC_MUTEX;
++        mutex->fd   = ioctl( get_inproc_device_fd(), NTSYNC_IOC_CREATE_MUTEX, &args );
++        list_add_tail( &inproc_mutexes, &mutex->entry );
++        if (mutex->fd == -1)
++        {
++            set_error( STATUS_TOO_MANY_OPENED_FILES );
++            release_object( mutex );
++            return NULL;
++        }
++        return mutex;
++    }
++#else
++    return NULL;
++#endif
+ }
+ 
+ struct inproc_sync *create_inproc_semaphore_sync( unsigned int initial, unsigned int max )
+ {
+-    struct ntsync_sem_args args = {.count = initial, .max = max};
+     struct inproc_sync *sem;
+ 
+-    if (!(sem = alloc_object( &inproc_sync_ops ))) return NULL;
+-    sem->type = INPROC_SYNC_SEMAPHORE;
+-    sem->fd   = ioctl( get_inproc_device_fd(), NTSYNC_IOC_CREATE_SEM, &args );
+-    list_init( &sem->entry );
 -
+-    if (sem->fd == -1)
+-    {
+-        set_error( STATUS_TOO_MANY_OPENED_FILES );
+-        release_object( sem );
+-        return NULL;
++    if (do_esync())
++    {
++        if (!(sem = alloc_object( &inproc_sync_ops ))) return NULL;
++        sem->esync_shm_idx = 0;
++        sem->type = ESYNC_SEMAPHORE;
++        sem->fd = eventfd( initial, EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE );
++        list_init( &sem->entry );
++        if (sem->fd != -1)
++            sem->esync_shm_idx = esync_alloc_shm( sem->fd, sem->type, initial, max );
++        if (sem->fd == -1)
++        {
++            set_error( STATUS_TOO_MANY_OPENED_FILES );
++            release_object( sem );
++            return NULL;
++        }
++        return sem;
+     }
+-    return sem;
++#ifdef NTSYNC_IOC_EVENT_READ
++    {
++        struct ntsync_sem_args args = {.count = initial, .max = max};
++        if (!(sem = alloc_object( &inproc_sync_ops ))) return NULL;
++        sem->esync_shm_idx = 0;
++        sem->type = INPROC_SYNC_SEMAPHORE;
++        sem->fd   = ioctl( get_inproc_device_fd(), NTSYNC_IOC_CREATE_SEM, &args );
++        list_init( &sem->entry );
++        if (sem->fd == -1)
++        {
++            set_error( STATUS_TOO_MANY_OPENED_FILES );
++            release_object( sem );
++            return NULL;
++        }
++        return sem;
++    }
++#else
++    return NULL;
++#endif
+ }
+ 
+ static void inproc_sync_dump( struct object *obj, int verbose )
+@@ -165,16 +264,26 @@
+ 
+ void signal_inproc_sync( struct inproc_sync *sync )
+ {
+-    __u32 count;
+     if (debug_level) fprintf( stderr, "set_inproc_event %d\n", sync->fd );
+-    ioctl( sync->fd, NTSYNC_IOC_EVENT_SET, &count );
++    if (do_esync()) { esync_set_event( sync->fd, sync->esync_shm_idx, sync->type ); return; }
++#ifdef NTSYNC_IOC_EVENT_READ
++    {
++        __u32 count;
++        ioctl( sync->fd, NTSYNC_IOC_EVENT_SET, &count );
++    }
++#endif
+ }
+ 
+ void reset_inproc_sync( struct inproc_sync *sync )
+ {
+-    __u32 count;
+     if (debug_level) fprintf( stderr, "reset_inproc_event %d\n", sync->fd );
+-    ioctl( sync->fd, NTSYNC_IOC_EVENT_RESET, &count );
++    if (do_esync()) { esync_reset_event( sync->fd, sync->esync_shm_idx, sync->type ); return; }
++#ifdef NTSYNC_IOC_EVENT_READ
++    {
++        __u32 count;
++        ioctl( sync->fd, NTSYNC_IOC_EVENT_RESET, &count );
++    }
++#endif
+ }
+ 
+ static int inproc_sync_signal( struct object *obj, unsigned int access, int signal )
+@@ -202,11 +311,19 @@
+ {
+     struct inproc_sync *mutex;
+ 
++    if (do_esync())
++    {
++        LIST_FOR_EACH_ENTRY( mutex, &inproc_mutexes, struct inproc_sync, entry )
++            esync_abandon_mutex( mutex->fd, mutex->esync_shm_idx, tid );
++        return;
++    }
++#ifdef NTSYNC_IOC_EVENT_READ
+     LIST_FOR_EACH_ENTRY( mutex, &inproc_mutexes, struct inproc_sync, entry )
+         ioctl( mutex->fd, NTSYNC_IOC_MUTEX_KILL, &tid );
++#endif
+ }
+ 
 -static int get_obj_inproc_sync( struct object *obj, int *type )
 +static int get_obj_inproc_sync( struct object *obj, int *type, unsigned int *esync_shm_idx )
  {
      struct object *sync;
      int fd = -1;
-@@ -233,57 +363,26 @@ static int get_obj_inproc_sync( struct object *obj, int *type )
+@@ -217,6 +334,7 @@
          struct inproc_sync *inproc = (struct inproc_sync *)sync;
          *type = inproc->type;
          fd = inproc->fd;
@@ -2162,76 +2387,14 @@ index ef68ee0..874f01c 100644
      }
  
      release_object( sync );
-     return fd;
- }
- 
--#else /* NTSYNC_IOC_EVENT_READ */
-+/* get_inproc_device_fd is only meaningful for the ntsync backend. */
-+#ifdef NTSYNC_IOC_EVENT_READ
- 
- int get_inproc_device_fd(void)
- {
--    return -1;
--}
--
--int get_inproc_sync_fd( struct inproc_sync *sync )
--{
--    return -1;
--}
--
--struct inproc_sync *create_inproc_internal_sync( int manual, int signaled )
--{
--    return NULL;
--}
--
--struct inproc_sync *create_inproc_event_sync( int manual, int signaled )
--{
--    return NULL;
--}
--
--struct inproc_sync *create_inproc_mutex_sync( thread_id_t owner, unsigned int count )
--{
--    return NULL;
--}
--
--struct inproc_sync *create_inproc_semaphore_sync( unsigned int initial, unsigned int max )
--{
--    return NULL;
--}
--
--void signal_inproc_sync( struct inproc_sync *sync )
--{
--}
--
--void reset_inproc_sync( struct inproc_sync *sync )
--{
-+    static int fd = -2;
-+    if (fd == -2) fd = open( "/dev/ntsync", O_CLOEXEC | O_RDONLY );
-+    return fd;
- }
- 
--void abandon_inproc_mutexes( thread_id_t tid )
--{
--}
-+#else /* NTSYNC_IOC_EVENT_READ */
- 
--static int get_obj_inproc_sync( struct object *obj, int *type )
-+int get_inproc_device_fd(void)
- {
-     return -1;
- }
-@@ -294,13 +393,20 @@ DECL_HANDLER(get_inproc_sync_fd)
- {
-     struct object *obj;
-     int fd;
-+    unsigned int esync_shm_idx = 0;
- 
-     if (!(obj = get_handle_obj( current->process, req->handle, 0, NULL ))) return;
+@@ -283,8 +401,16 @@
  
      reply->access = get_handle_access( current->process, req->handle );
  
 -    if ((fd = get_obj_inproc_sync( obj, &reply->type )) < 0) set_error( STATUS_NOT_IMPLEMENTED );
 -    else send_client_fd( current->process, fd, req->handle );
++    unsigned int esync_shm_idx = 0;
++
 +    if ((fd = get_obj_inproc_sync( obj, &reply->type, &esync_shm_idx )) < 0) set_error( STATUS_NOT_IMPLEMENTED );
 +    else if (do_esync())
 +    {

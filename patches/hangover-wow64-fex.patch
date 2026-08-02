@@ -1,15 +1,5 @@
-From: AndreRH <AndreRH@users.noreply.github.com>
+From: AndreRH
 Subject: [PATCH] hangover: wow64 FEX integration
-
-Load libarm64ecfex.dll / wowbox64.dll (FEX-based) as the wow64 CPU DLL
-instead of the upstream xtajit.dll / wow64cpu.dll. The DLLs are selected
-via HODLL / HODLL64 environment variables, falling back to the FEX
-defaults.
-
-Also adds RtlWow64SuspendThread / Wow64SuspendLocalThread exports that
-the FEX-based CPU DLLs need for remote-thread suspend support.
-
-Extracted from AndreRH/wine tag hangover-11.9 vs wine-mirror/wine-11.9.
 
 ---
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
