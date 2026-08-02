@@ -2,7 +2,7 @@
 TERMUX_PKG_HOMEPAGE=https://www.winehq.org
 TERMUX_PKG_DESCRIPTION="A compatibility layer for running Windows programs (Hangover fork)"
 TERMUX_PKG_LICENSE="LGPL-2.1"
-TERMUX_PKG_LICENSE_FILE="LICENSE, LICENSE.OLD, COPYING.LIB"
+TERMUX_PKG_LICENSE_FILE="LICENSE, COPYING.LIB"
 TERMUX_PKG_MAINTAINER="@LuKazuu"
 TERMUX_PKG_VERSION="__WINE_VERSION__"
 TERMUX_PKG_SRCURL="https://github.com/wine-mirror/wine/archive/refs/tags/wine-${TERMUX_PKG_VERSION}.tar.gz"
