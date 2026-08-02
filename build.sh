@@ -1,10 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # build.sh — Termux package recipe for Hangover Wine
 #
-# This file is COPIED OVER termux-packages/x11-packages/hangover-wine/build.sh
-# by the GitHub Actions workflow before the build starts.
-#
-# All sources are 100% upstream — no AndreRH dependency:
+# All sources are 100% upstream:
 #   - Wine:    wine-mirror/wine (official upstream)
 #   - FEX:     FEX-Emu/FEX (official upstream)
 #   - Box64:   ptitSeb/box64 (official upstream)
@@ -20,8 +17,6 @@ TERMUX_PKG_MAINTAINER="@LuKazuu"
 # Injected by the workflow (placeholder, sed-replaced before building).
 TERMUX_PKG_VERSION="__WINE_VERSION__"
 
-# Only one source: Wine itself. FEX/Box64 DLLs are built in the workflow
-# and copied into place by termux_step_post_make_install below.
 TERMUX_PKG_SRCURL="https://github.com/wine-mirror/wine/archive/refs/tags/wine-${TERMUX_PKG_VERSION}.tar.gz"
 TERMUX_PKG_SHA256="__WINE_SHA256__"
 TERMUX_PKG_DEPENDS="fontconfig, freetype, krb5, libandroid-spawn, libc++, libgmp, libgnutls, libxcb, libxcomposite, libxcursor, libxfixes, libxrender, opengl, pulseaudio, sdl2, vulkan-loader, xorg-xrandr"
@@ -37,7 +32,6 @@ TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS="
 --disable-tests
 "
 
-# Disable userfaultfd syscall as it is missing on older Android, see #25015
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 ac_cv_header_linux_userfaultfd_h=no
 ac_cv_path_GRADLE=no
@@ -95,11 +89,8 @@ enable_tools=yes
 --without-xxf86vm
 --enable-archs=i386,aarch64,arm64ec
 "
-# TODO: `--enable-archs=arm` doesn't build with option `--with-mingw=clang`, but
-# TODO: `arm64ec` doesn't build with option `--with-mingw` (arm64ec-w64-mingw32-clang)
 
 _setup_llvm_mingw_toolchain() {
-        # LLVM-mingw's version number must not be the same as the NDK's.
         local _llvm_mingw_version=21
         local _version="20250319"
         local _url="https://github.com/mstorsjo/llvm-mingw/releases/download/$_version/llvm-mingw-$_version-ucrt-ubuntu-20.04-x86_64.tar.xz"
@@ -116,32 +107,21 @@ _setup_llvm_mingw_toolchain() {
 }
 
 termux_step_host_build() {
-        # Setup llvm-mingw toolchain
         _setup_llvm_mingw_toolchain
-
-        # Make host wine-tools
         "$TERMUX_PKG_SRCDIR/configure" ${TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS}
         make -j "$TERMUX_PKG_MAKE_PROCESSES" __tooldeps__ nls/all
 }
 
 termux_step_pre_configure() {
-        # Setup llvm-mingw toolchain
         _setup_llvm_mingw_toolchain
-
-        # Fix overoptimization
         CPPFLAGS="${CPPFLAGS/-Oz/}"
         CFLAGS="${CFLAGS/-Oz/}"
         CXXFLAGS="${CXXFLAGS/-Oz/}"
-
-        # Disable hardening
         CPPFLAGS="${CPPFLAGS/-fstack-protector-strong/}"
         CFLAGS="${CFLAGS/-fstack-protector-strong/}"
         CXXFLAGS="${CXXFLAGS/-fstack-protector-strong/}"
         LDFLAGS="${LDFLAGS/-Wl,-z,relro,-z,now/}"
-
         LDFLAGS+=" -landroid-spawn"
-
-        # https://github.com/termux-user-repository/tur/commit/9388bf3599bba33d7bd052cab0679fe9cd5917d2#commitcomment-176464300
         LDFLAGS+=" -Wl,--rosegment"
 }
 
@@ -151,8 +131,6 @@ termux_step_make() {
 
 termux_step_make_install() {
         make -j $TERMUX_PKG_MAKE_PROCESSES install
-
-        # Create hangover-wine script
         mkdir -p $TERMUX_PREFIX/bin
         cat << EOF > $TERMUX_PREFIX/bin/hangover-wine
 #!$TERMUX_PREFIX/bin/env sh
@@ -162,10 +140,6 @@ EOF
 }
 
 termux_step_post_make_install() {
-        # Install FEX/Box64 wow64 DLLs that were built from source earlier in
-        # the GitHub Actions workflow. The workflow copies them into the
-        # package directory (next to build.sh) as fex-dlls/*.dll.
-        # TERMUX_PKG_BUILDER_DIR is the dir containing build.sh, set by Termux.
         local _dll_dir="${TERMUX_PKG_BUILDER_DIR}/fex-dlls"
         if [ ! -d "$_dll_dir" ]; then
                 echo "ERROR: $_dll_dir does not exist (FEX DLLs not provided)" >&2
@@ -184,29 +158,20 @@ termux_step_post_make_install() {
                 fi
         done
 
-        # Install LICENSE/copyright files for hangover and each subpackage.
-        # The subpackage .sh files expect copyright at specific paths:
-        #   share/doc/hangover/copyright                  → Wine license (LGPL-2.1)
-        #   share/doc/hangover-libarm64ecfex/copyright    → FEX license (MIT)
-        #   share/doc/hangover-libwow64fex/copyright      → FEX license (MIT)
-        #   share/doc/hangover-wowbox64/copyright         → Box64 license (MIT)
-        # All from official upstream repos.
+        # Install LICENSE/copyright files from upstream repos.
         mkdir -p "$TERMUX_PREFIX"/share/doc/hangover \
                  "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex \
                  "$TERMUX_PREFIX"/share/doc/hangover-libwow64fex \
                  "$TERMUX_PREFIX"/share/doc/hangover-wowbox64
 
-        # Wine license (LGPL-2.1) — included in the source tarball
         cp "$TERMUX_PKG_SRCDIR/LICENSE" \
            "$TERMUX_PREFIX"/share/doc/hangover/copyright
 
-        # FEX license (MIT) — from upstream FEX-Emu/FEX repo
         curl -L "https://raw.githubusercontent.com/FEX-Emu/FEX/main/LICENSE" \
              -o "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex/copyright
         cp "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex/copyright \
            "$TERMUX_PREFIX"/share/doc/hangover-libwow64fex/copyright
 
-        # Box64 license (MIT) — from upstream ptitSeb/box64 repo
         curl -L "https://raw.githubusercontent.com/ptitSeb/box64/main/LICENSE" \
              -o "$TERMUX_PREFIX"/share/doc/hangover-wowbox64/copyright
 }

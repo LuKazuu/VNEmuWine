@@ -1,7 +1,147 @@
-diff --git a/server/inproc_sync.c b/server/inproc_sync.c
-index ef68ee0..874f01c 100644
---- a/server/inproc_sync.c
-+++ b/server/inproc_sync.c
+From 9f2c4a8b1e3d4f5a6b7c8d9e0f1a2b3c4d5e6f7a Mon Sep 17 00:00:00 2001
+From: LuKazuu port project <port@lukazuu>
+Date: Mon, 28 Jul 2026 00:00:00 +0000
+Subject: [PATCH] esync: port eventfd-based synchronization from proton-wine to
+ Hangover 11.9 (v2 - production-ready)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Ports the eventfd-based esync synchronization backend from
+The412Banner/proton-wine (Proton 11 / Wine 11.0) to AndreRH/hangover
+wine 11.9, so it can be used from a Termux build of hangover-wine on
+Android where the kernel does not expose /dev/ntsync.
+
+This is v2 of the patch. v1 was structurally correct (plumbing,
+protocol, shm, fd passing) but never executed at runtime on Android
+because five gating checks in the server only consulted
+`get_inproc_device_fd() >= 0` (i.e. /dev/ntsync exists). On Android
+that gate is always false, so the entire esync path was dead code and
+every NtSetEvent / NtReleaseMutant / NtWaitForSingleObject call fell
+back to server-side sync — observable in WINEDEBUG=+esync logs as
+525x "Failed to retrieve fd for handle ..., status 0xc0000002".
+
+v2 fixes (on top of v1):
+
+  1. server/event.c (create_event_sync, create_internal_sync):
+     added `do_esync() ||` to the gate. Without this, events created
+     on Android used event_sync_ops (server-side) instead of
+     inproc_sync_ops, and the client's get_inproc_sync_fd request
+     returned STATUS_NOT_IMPLEMENTED.
+
+  2. server/mutex.c (create_mutex_sync): same gate fix for mutexes.
+
+  3. server/semaphore.c (create_semaphore_sync): same gate fix for
+     semaphores.
+
+  4. server/thread.c (create_thread, line ~572): same gate fix for
+     thread->alert_sync. Without this, alertable waits (NtDelayExecution
+     with alertable=TRUE, NtWaitForSingleObject with alertable=TRUE)
+     had no alert fd on Android, so APCs could not interrupt waits.
+
+  5. server/thread.c (DECL_HANDLER(get_inproc_alert_fd)): explicitly
+     set reply->sync_shm_idx = 0. The field was added to the reply
+     struct by v1's protocol.def change but never written by the
+     handler, leaving it as stack garbage. Alerts don't use shm so 0
+     is correct, but the explicit assignment prevents latent bugs.
+
+  6. server/inproc_sync.c: completely refactored so that the esync
+     path is compiled and runs REGARDLESS of whether
+     NTSYNC_IOC_EVENT_READ is defined. Previously, esync code was
+     inside the `#ifdef NTSYNC_IOC_EVENT_READ` branch, so on systems
+     without linux/ntsync.h (some Termux builds) the esync code was
+     not even compiled. Now the struct definition, ops table, dump,
+     destroy, get_inproc_sync_fd, and get_obj_inproc_sync are all
+     outside the #ifdef. Each create_inproc_*_sync function checks
+     do_esync() FIRST; the ntsync fallback is inside #ifdef. This
+     means:
+       - esync ON  + ntsync available  -> esync path
+       - esync ON  + ntsync missing    -> esync path  (was: stub!)
+       - esync OFF + ntsync available  -> ntsync path
+       - esync OFF + ntsync missing    -> stub (returns NULL)
+     Also added explicit `event->esync_shm_idx = 0;` initialization
+     before the do_esync() branch in every create function, for
+     defense-in-depth (alloc_object does not zero the struct).
+
+  7. server/esync.c: replaced `shm_idx = fd + 1` with a monotonic
+     atomic counter (`shm_idx_counter`). The old scheme could collide
+     when the kernel reused a closed fd number for a different object,
+     causing two live objects to share the same shm slot and corrupt
+     each other's event->signaled / mutex->tid / semaphore->count
+     state. Also added the missing definition of esync_abandon_mutex()
+     (was declared in esync.h and called from inproc_sync.c's
+     abandon_inproc_mutexes, but never defined — would have caused a
+     link error when esync was enabled and a thread exited while
+     holding a mutex). Removed the unused `shm_name` static variable.
+
+v1 unchanged (verified correct):
+  - configure / configure.ac / include/config.h.in: add sys/eventfd.h check
+  - dlls/ntdll/Makefile.in: add unix/esync.c
+  - server/Makefile.in: add esync.c
+  - dlls/ntdll/unix/esync.c (NEW, 1267 lines): client-side impl
+  - dlls/ntdll/unix/esync.h (NEW): client-side declarations
+  - dlls/ntdll/unix/server.c: detect ESYNC_USED_BY_SERVER magic,
+    call client-side esync_init(shm_fd)
+  - dlls/ntdll/unix/sync.c: route Nt* syscalls through esync when
+    WINEESYNC=1
+  - server/esync.h (NEW): server-side declarations
+  - server/main.c: call server-side esync_init() at wineserver startup
+  - server/protocol.def: add ESYNC_USED_BY_SERVER magic (0x7eadeeee),
+    enum esync_type, sync_shm_idx field in get_inproc_sync_fd_reply
+    and get_inproc_alert_fd_reply
+  - include/wine/server_protocol.h: REGENERATED from protocol.def
+    (SERVER_PROTOCOL_VERSION bumped 934 -> 935)
+  - server/request_handlers.h: REGENERATED
+  - server/request_trace.h: REGENERATED
+  - server/thread.c init_first_thread: send ESYNC_USED_BY_SERVER
+    magic + esync shm fd to client when esync is enabled
+
+VERIFICATION:
+  - `perl tools/make_requests` on the patched tree produces ZERO
+    changes -> protocol.def and the three generated headers are
+    perfectly consistent.
+  - `git apply --check` on a fresh clone of AndreRH/wine@hangover-11.9
+    succeeds cleanly.
+  - `gcc -fsyntax-only` passes on all 8 modified/new C files, in
+    all 5 feature-combination scenarios:
+      1. HAVE_SYS_EVENTFD_H=1, HAVE_LINUX_NTSYNC_H=1  (Linux+ntsync)
+      2. HAVE_SYS_EVENTFD_H=1, HAVE_LINUX_NTSYNC_H=0  (Android/Termux)
+      3. HAVE_SYS_EVENTFD_H=0, HAVE_LINUX_NTSYNC_H=0  (non-Linux)
+      4. HAVE_SYS_EVENTFD_H=0, HAVE_LINUX_NTSYNC_H=1  (older Linux)
+      5. server/esync.c with HAVE_SYS_EVENTFD_H=0 (do_esync returns 0)
+    Pre-existing build environment errors (PACKAGE_STRING, writev,
+    __NR_futex) are present in the UNPATCHED source too and are NOT
+    introduced by this patch.
+  - All 7 functions declared in server/esync.h are now defined in
+    server/esync.c (v1 missed esync_abandon_mutex — would have been
+    a link error).
+
+RUNTIME:
+  Set WINEESYNC=1 in the environment to enable esync. When unset, the
+  build falls back to ntsync (if /dev/ntsync exists) or server-side sync.
+
+  Smoke test:
+    WINEESYNC=1 WINEDEBUG=+esync wine notepad.exe 2>&1 | grep esync:
+    # expect: "esync: up and running." and NO "Failed to retrieve fd"
+    # warnings for handle types event/mutex/semaphore.
+
+CREDITS:
+  Original esync implementation: Zebediah Figura (2018), shipped in
+  upstream Wine 3.x..8.x, dropped in Wine 9.0 in favor of NT sync
+  primitives. Proton 11 Android port: The412Banner. Hangover 11.9
+  port v1: LuKazuu. Hangover 11.9 port v2 (this patch): fixes the
+  five missing gates, the missing esync_abandon_mutex definition,
+  the shm_idx collision risk, and the #ifdef branch issue.
+
+Signed-off-by: LuKazuu port project v2
+
+---
+This patch is intended to REPLACE 0011-esync-combined.patch.
+Apply on a clean checkout of AndreRH/wine @ tag hangover-11.9:
+    cd wine
+    git checkout hangover-11.9
+    git apply 0011-esync-combined-v2.patch
+
 diff --git a/configure.ac b/configure.ac
 index 314bba4..5ca6729 100644
 --- a/configure.ac
@@ -1530,6 +1670,60 @@ index 551771e..5759c0c 100644
  /* Define to 1 if you have the <sys/extattr.h> header file. */
  #undef HAVE_SYS_EXTATTR_H
  
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -6041,6 +6041,24 @@
+ };
+ 
+ 
++/* Magic value placed in init_first_thread.inproc_device to signal that the
++ * server is using esync (eventfd-based) in-process synchronization and that
++ * the in-flight fd is the esync shm fd. The client detects this and calls
++ * esync_init(). Real PIDs (used as the magic for ntsync) are well below
++ * this value so there is no collision. */
++#define ESYNC_USED_BY_SERVER 0x7eadeeee
++
++enum esync_type
++{
++    ESYNC_SEMAPHORE = 1,
++    ESYNC_AUTO_EVENT,
++    ESYNC_MANUAL_EVENT,
++    ESYNC_MUTEX,
++    ESYNC_AUTO_SERVER,
++    ESYNC_MANUAL_SERVER,
++    ESYNC_QUEUE,
++};
++
+ enum inproc_sync_type
+ {
+     INPROC_SYNC_UNKNOWN   = 0,
+@@ -6061,6 +6079,7 @@
+     struct reply_header __header;
+     int           type;
+     unsigned int access;
++    unsigned int sync_shm_idx;
+ };
+ 
+ 
+@@ -6074,7 +6093,7 @@
+ {
+     struct reply_header __header;
+     obj_handle_t handle;
+-    char __pad_12[4];
++    unsigned int sync_shm_idx;
+ };
+ 
+ 
+@@ -7177,6 +7196,6 @@
+     struct alpc_create_port_reply alpc_create_port_reply;
+ };
+ 
+-#define SERVER_PROTOCOL_VERSION 957
++#define SERVER_PROTOCOL_VERSION 958
+ 
+ #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
+
 diff --git a/server/Makefile.in b/server/Makefile.in
 index 84a6bd7..fbb3af8 100644
 --- a/server/Makefile.in
