@@ -168,7 +168,7 @@ jobs:
             fi
           done
           echo "$PASSED passed, $FAILED failed"
-          [ "$FAILED" -ne 0 ] && exit 1
+          if [ "$FAILED" -ne 0 ]; then exit 1; fi
 
       - name: Clone termux-packages
         run: git clone --depth=1 https://github.com/termux/termux-packages.git
