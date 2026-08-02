@@ -1,0 +1,106 @@
+From: AndreRH <AndreRH@users.noreply.github.com>
+Subject: [PATCH] hangover: misc Android/Termux adjustments
+
+- build: append " (Hangover)" to the wine_build version string
+- ntdll/server: warn if host page size != 4096 (Hangover wiki ref)
+- ntdll/virtual: cap wow64 allocations to 4 GB for compatibility
+- server/mapping: add free_available_high_map_addr() helper and use it
+  in init_memory(); also change the low map address from 0x60000000 to
+  0x4000000000 to avoid conflicts with Android's memory layout
+
+Extracted from AndreRH/wine tag hangover-11.9 vs wine-mirror/wine-11.9,
+with the Android low-address fix (ex-0007-android-memoryfix.patch)
+merged into the init_memory hunk to avoid patch-ordering conflicts.
+
+---
+diff --git a/configure.ac b/configure.ac
+index 485a137..314bba4 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -3788,7 +3788,7 @@ dnl Rules for generated source files
+ 
+ WINE_APPEND_RULE(
+ [dlls/ntdll/unix/version.c: dummy
+-	@version=\`(GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
++	@version=\`(GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1 (Hangover)\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
+ programs/winetest/build.rc: dummy
+ 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
+ dlls/wineandroid.drv/wine-debug.apk: dlls/wineandroid.drv/build.gradle ${wine_srcdir}dlls/wineandroid.drv/AndroidManifest.xml ${wine_srcdir}dlls/wineandroid.drv/WineActivity.java ${wine_srcdir}dlls/wineandroid.drv/wine.svg
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 730a0cd..14b8bc7 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1325,6 +1325,11 @@ static int setup_config_dir(void)
+     struct stat st;
+     int fd_cwd = open( ".", O_RDONLY );
+ 
++#ifdef _SC_PAGESIZE
++    if (sysconf( _SC_PAGESIZE ) != 4096)
++        MESSAGE("You are running with the wrong page size, expect problems!\nPlease also consult https://github.com/AndreRH/hangover/wiki/Page-Size\n");
++#endif
++
+     if (chdir( config_dir ) == -1)
+     {
+         if (errno != ENOENT) fatal_perror( "cannot use directory %s", config_dir );
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index a2ea524..5a3ef00 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5146,6 +5146,9 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
+     {
+         base = NULL;
+         size = ROUND_SIZE( 0, size, page_mask );
++#ifdef _WIN64
++        if (is_wow64() && (!limit_high || limit_high > limit_4g)) limit_low = limit_4g;
++#endif
+     }
+ 
+     /* Compute the alloc type flags */
+diff --git a/server/mapping.c b/server/mapping.c
+index a53b6b6..2ee4831 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -21,6 +21,7 @@
+ #include "config.h"
+ 
+ #include <assert.h>
++#include <errno.h>
+ #include <fcntl.h>
+ #include <stdarg.h>
+ #include <stdio.h>
+@@ -272,11 +273,33 @@ static inline mem_size_t round_size( mem_size_t size, mem_size_t mask )
+     return (size + mask) & ~mask;
+ }
+ 
++static void free_available_high_map_addr( client_ptr_t base, mem_size_t size )
++{
++    unsigned int flags = MAP_PRIVATE | MAP_ANON;
++
++#ifdef MAP_FIXED_NOREPLACE
++    flags |= MAP_FIXED_NOREPLACE;
++#endif
++
++    while (base >> 32)
++    {
++        void *ret = mmap( (void *)base, host_page_mask + 1, PROT_NONE, flags, -1, 0 );
++        if (ret != MAP_FAILED) munmap( ret, host_page_mask + 1 );
++        if ((ret != MAP_FAILED && ret >= (void *)base) || errno == EEXIST)
++        {
++            free_map_addr( base, size );
++            return;
++        }
++        base >>= 1;
++        size >>= 1;
++    }
++}
++
+ void init_memory(void)
+ {
+     host_page_mask = sysconf( _SC_PAGESIZE ) - 1;
+-    free_map_addr( 0x60000000, 0x1c000000 );
+-    free_map_addr( 0x600000000000, 0x100000000000 );
++    free_map_addr( 0x4000000000, 0x1000000000 ); /* Android fix: avoid low 32-bit conflict */
++    free_available_high_map_addr( 0x600000000000, 0x100000000000 );
+ }
+ 
+ static void ranges_dump( struct object *obj, int verbose )

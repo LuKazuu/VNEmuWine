@@ -1,0 +1,161 @@
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -3022,6 +3022,113 @@
+ 
+ 
+ /***********************************************************************
++ *           remap_section_anonymous_exec
++ *
++ * Fallback for noexec filesystems: replace a file-backed mapping that
++ * could not be given PROT_EXEC with an anonymous mapping that can.
++ *
++ * The kernel's MS_NOEXEC restriction only applies to file-backed
++ * mappings whose backing file lives on a noexec mount (e.g. Android's
++ * /sdcard via sdcardfs/FUSE). Anonymous mappings are never subject to
++ * MS_NOEXEC, so a MAP_PRIVATE|MAP_ANONYMOUS mapping can always be
++ * created with PROT_EXEC, even on a noexec filesystem.
++ *
++ * virtual_mutex must be held by caller. The caller's vprot table is
++ * assumed to already reflect the desired final protection (set_vprot
++ * updates it before calling mprotect_range, so by the time we get
++ * here the page table is correct -- only the kernel mapping is
++ * wrong). On success this function re-applies that protection so the
++ * anonymous mapping does not stay RWX.
++ *
++ * The original file-backed section is only dropped after we have both
++ * (a) verified that anonymous executable mappings are permitted at all
++ * and (b) saved the section contents, and it is restored on failure so
++ * the image is never left with an unmapped hole.
++ */
++static NTSTATUS remap_section_anonymous_exec( struct file_view *view, void *base, size_t size,
++                                              int fd, off_t file_start, size_t file_size, BOOL removable )
++{
++    void *addr, *probe;
++    void *tmp;
++    off_t view_offset = (char *)base - (char *)view->base;
++
++    /* First verify that anonymous executable mappings are permitted at
++     * all. If the kernel refuses PROT_EXEC even for anonymous memory
++     * (e.g. a hardened configuration), bail out before touching the
++     * existing mapping so we never leave the section unmapped. */
++    probe = mmap( NULL, host_page_size, PROT_READ | PROT_WRITE | PROT_EXEC,
++                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0 );
++    if (probe == MAP_FAILED) return STATUS_NO_MEMORY;
++    munmap( probe, host_page_size );
++
++    /* Save the existing section contents (the file-backed mapping is
++     * still readable at this point; we are about to unmap it). */
++    if (!(tmp = malloc( size ))) return STATUS_NO_MEMORY;
++    memcpy( tmp, base, size );
++
++    /* Drop the file-backed mapping. */
++    if (munmap( base, size ))
++    {
++        free( tmp );
++        return STATUS_NO_MEMORY;
++    }
++
++    /* Create an anonymous mapping in its place. MAP_FIXED ensures we
++     * get back the exact same virtual address. Anonymous mappings are
++     * not subject to MS_NOEXEC, so PROT_EXEC succeeds here even on
++     * /sdcard. */
++    addr = mmap( base, size, PROT_READ | PROT_WRITE | PROT_EXEC,
++                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0 );
++    if (addr != base)
++    {
++        /* The anonymous remap failed. Restore the original file-backed
++         * section (file data + anonymous BSS tail) so the image does
++         * not end up with a hole, then report failure. */
++        if (file_size &&
++            map_file_into_view( view, fd, view_offset, file_size, file_start,
++                                VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY, removable ) == STATUS_SUCCESS &&
++            (file_size == size ||
++             mmap( (char *)base + file_size, size - file_size, PROT_READ | PROT_WRITE,
++                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0 ) == (char *)base + file_size))
++        {
++            memcpy( base, tmp, size );
++            free( tmp );
++            return STATUS_ACCESS_DENIED;
++        }
++
++        /* Restoration also failed; re-map the whole range as anonymous
++         * RW as a last resort so at least the address range stays
++         * mapped and accessible. */
++        if (mmap( base, size, PROT_READ | PROT_WRITE,
++                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0 ) == base)
++        {
++            memcpy( base, tmp, size );
++            free( tmp );
++            return STATUS_ACCESS_DENIED;
++        }
++        free( tmp );
++        return STATUS_NO_MEMORY;
++    }
++
++    /* Restore the section contents (code + initialized data + BSS). */
++    memcpy( base, tmp, size );
++    free( tmp );
++
++    /* Re-apply the intended per-page protections. set_vprot already
++     * updated the page table, so this turns e.g. .text back into RX;
++     * without it the anonymous mapping would remain RWX and defeat
++     * Wine's exec/write protection. */
++    if (mprotect_range( base, size, 0, 0 ))
++    {
++        ERR( "failed to re-apply protection on remapped section %p-%p\n",
++             base, (char *)base + size - 1 );
++        return STATUS_ACCESS_DENIED;
++    }
++    return STATUS_SUCCESS;
++}
++
++
++/***********************************************************************
+  *           map_image_into_view
+  *
+  * Map an executable (PE format) image into an existing view.
+@@ -3093,7 +3200,10 @@
+         }
+ 
+         /* set the image protections */
+-        set_vprot( view, ptr, total_size, VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY | VPROT_EXEC );
++        if (!set_vprot( view, ptr, total_size, VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY | VPROT_EXEC ) &&
++            remap_section_anonymous_exec( view, ptr, total_size, fd, 0, total_size, removable ) != STATUS_SUCCESS)
++            ERR( "failed to set exec protection on flat-mapped image %s, noexec filesystem?\n",
++                 debugstr_us(nt_name) );
+ 
+         /* no relocations are performed on non page-aligned binaries */
+         status = STATUS_SUCCESS;
+@@ -3253,8 +3363,30 @@
+         if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) vprot |= VPROT_EXEC;
+ 
+         if (!set_vprot( view, ptr + sec[i].VirtualAddress, size, vprot ) && (vprot & VPROT_EXEC))
+-            ERR( "failed to set %08x protection on %s section %.8s, noexec filesystem?\n",
+-                 sec[i].Characteristics, debugstr_us(nt_name), sec[i].Name );
++        {
++            if (sec[i].Characteristics & IMAGE_SCN_MEM_SHARED)
++            {
++                /* A shared+executable section must remain shared; remapping it as
++                 * a private anonymous copy would break its cross-process sharing
++                 * contract, so leave it to the caller's error path instead. */
++                ERR( "failed to set %08x protection on shared section %.8s of %s, noexec filesystem?\n",
++                     sec[i].Characteristics, sec[i].Name, debugstr_us(nt_name) );
++            }
++            else
++            {
++                SIZE_T file_start = sec[i].PointerToRawData & ~0x1ff;
++                SIZE_T file_size  = ROUND_SIZE( sec[i].PointerToRawData, sec[i].SizeOfRawData, 0x1ff );
++                if (file_size > size) file_size = size;
++                NTSTATUS fs_status = remap_section_anonymous_exec( view, ptr + sec[i].VirtualAddress, size,
++                                                                   fd, file_start, file_size, removable );
++                if (fs_status == STATUS_SUCCESS)
++                    WARN_(module)( "noexec fs: remapped section %.8s of %s as anonymous+exec\n",
++                                   sec[i].Name, debugstr_us(nt_name) );
++                else
++                    ERR( "failed to set %08x protection on %s section %.8s, noexec filesystem?\n",
++                         sec[i].Characteristics, debugstr_us(nt_name), sec[i].Name );
++            }
++        }
+     }
+ 
+ #ifdef VALGRIND_LOAD_PDB_DEBUGINFO

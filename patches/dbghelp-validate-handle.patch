@@ -1,0 +1,28 @@
+diff --git a/dlls/dbghelp/dbghelp.c b/dlls/dbghelp/dbghelp.c
+index 911daec..20c1fd5 100644
+--- a/dlls/dbghelp/dbghelp.c
++++ b/dlls/dbghelp/dbghelp.c
+@@ -458,6 +458,11 @@ BOOL WINAPI SymInitializeW(HANDLE hProcess, PCWSTR UserSearchPath, BOOL fInvadeP
+ 
+     TRACE("(%p %s %u)\n", hProcess, debugstr_w(UserSearchPath), fInvadeProcess);
+ 
++    if (hProcess == INVALID_HANDLE_VALUE)
++    {
++        WARN("invalid process handle, returning TRUE to avoid crash on Android\n");
++        return TRUE;
++    }
+     if (process_find_by_handle(hProcess))
+     {
+         WARN("the symbols for this process have already been initialized!\n");
+@@ -548,6 +553,11 @@ BOOL WINAPI SymCleanup(HANDLE hProcess)
+ 
+     TRACE("(%p)\n", hProcess);
+ 
++    if (hProcess == INVALID_HANDLE_VALUE)
++    {
++        WARN("invalid process handle in SymCleanup\n");
++        return TRUE;
++    }
+     for (ppcs = &process_first; *ppcs; ppcs = &(*ppcs)->next)
+     {
+         if ((*ppcs)->handle == hProcess)

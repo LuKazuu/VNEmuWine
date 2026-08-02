@@ -1,0 +1,20 @@
+diff --git a/dlls/mfplat/main.c b/dlls/mfplat/main.c
+index 6763ee8..2d578d7 100644
+--- a/dlls/mfplat/main.c
++++ b/dlls/mfplat/main.c
+@@ -9288,6 +9288,15 @@ HRESULT WINAPI MFCreateDXGIDeviceManager(UINT *token, IMFDXGIDeviceManager **man
+ 
+     TRACE("%p, %p.\n", token, manager);
+ 
++    {
++        const char *do_not_create = getenv("WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER");
++        if (do_not_create && do_not_create[0] != '\0')
++        {
++            FIXME("WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER set, stubbing out to fix Unity video freeze\n");
++            return E_NOTIMPL;
++        }
++    }
++
+     if (!token || !manager)
+         return E_POINTER;
+ 

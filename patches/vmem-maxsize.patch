@@ -1,0 +1,41 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 5a3ef00..afa7644 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -197,7 +197,9 @@ static void *user_space_limit    = (void *)0x7fff0000;
+ static void *working_set_limit   = (void *)0x7fff0000;
+ #endif
+ 
+-static void *host_addr_space_limit;  /* top of the host virtual address space */
++static void *host_addr_space_limit;
++
++static SIZE_T vmem_max_size = 0;  /* top of the host virtual address space */
+ 
+ static struct file_view *arm64ec_view;
+ 
+@@ -3722,6 +3724,15 @@ void virtual_init(void)
+     size = (char *)address_space_start - (char *)0x10000;
+     if (size && mmap_is_in_reserved_area( (void*)0x10000, size ) == 1)
+         anon_mmap_fixed( (void *)0x10000, size, PROT_READ | PROT_WRITE, 0 );
++
++    {
++        const char *vmem_max_size_env = getenv( "WINEVMEMMAXSIZE" );
++        if (vmem_max_size_env)
++        {
++            vmem_max_size = (SIZE_T)strtol(vmem_max_size_env, NULL, 10) << 20;
++            TRACE( "WINEVMEMMAXSIZE=%s -> %lu MB\n", vmem_max_size_env, (unsigned long)(vmem_max_size >> 20) );
++        }
++    }
+ }
+ 
+ 
+@@ -5122,7 +5133,8 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
+ 
+     /* Round parameters to a page boundary */
+ 
+-    if (is_beyond_limit( 0, size, working_set_limit )) return STATUS_WORKING_SET_LIMIT_RANGE;
++    if (is_beyond_limit( 0, size, working_set_limit ) || (vmem_max_size > 0 && size > vmem_max_size))
++        return STATUS_WORKING_SET_LIMIT_RANGE;
+ 
+     if (*ret)
+     {
