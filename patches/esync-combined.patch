@@ -1693,7 +1693,7 @@ diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
  enum inproc_sync_type
  {
      INPROC_SYNC_UNKNOWN   = 0,
-@@ -6061,6 +6075,8 @@
+@@ -6061,6 +6074,8 @@
      struct reply_header __header;
      int           type;
      unsigned int access;
@@ -1711,7 +1711,7 @@ diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
  };
  
  
-@@ -7177,6 +7191,6 @@
+@@ -7177,6 +7192,6 @@
      struct alpc_create_port_reply alpc_create_port_reply;
  };
  
