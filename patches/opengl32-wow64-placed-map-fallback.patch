@@ -1,5 +1,5 @@
 --- a/dlls/opengl32/unix_wgl.c	2026-08-03 14:51:39.096902805 +0000
-+++ b/dlls/opengl32/unix_wgl.c	2026-08-03 14:34:38.475256382 +0000
++++ b/dlls/opengl32/unix_wgl.c	2026-08-03 14:59:54.975332528 +0000
 @@ -149,6 +149,7 @@
      void *vm_ptr;
      SIZE_T vm_size;
@@ -8,7 +8,18 @@
  
      /* members of Vulkan-backed buffer storages */
      struct vk_device *vk_device;
-@@ -1910,6 +1911,19 @@
+@@ -370,7 +371,9 @@
+     {
+         .sType = VK_STRUCTURE_TYPE_MEMORY_UNMAP_INFO_KHR,
+         .memory = buffer->vk_memory,
+-        .flags = VK_MEMORY_UNMAP_RESERVE_BIT_EXT,
++        /* placed mappings keep the reservation on unmap; plain copy-fallback
++         * mappings were never placed, so unmap without the reserve bit */
++        .flags = buffer->copy_map ? 0 : VK_MEMORY_UNMAP_RESERVE_BIT_EXT,
+     };
+     VkResult vr;
+ 
+@@ -1910,6 +1913,19 @@
  
      if (!buffer->vk_memory) return;
  
@@ -28,7 +39,7 @@
      vr = buffer->vk_device->p_vkFlushMappedMemoryRanges( buffer->vk_device->vk_device, 1, &memory_range );
      if (vr) ERR( "vkFlushMappedMemoryRanges failed: %x\n", vr );
  }
-@@ -2073,13 +2087,47 @@
+@@ -2073,13 +2089,47 @@
  
          if (!buffer_vm_alloc( teb, buffer, buffer->size )) return NULL;
          placed_info.pPlacedAddress = buffer->vm_ptr;
@@ -50,7 +61,7 @@
 +            {
 +                .sType = VK_STRUCTURE_TYPE_MEMORY_UNMAP_INFO_KHR,
 +                .memory = buffer->vk_memory,
-+                .flags = VK_MEMORY_UNMAP_RESERVE_BIT_EXT,
++                .flags = 0,
 +            };
 +
 +            if (!offset && !length) length = buffer->size;
@@ -77,7 +88,7 @@
          buffer->map_ptr = (char *)buffer->vm_ptr + offset;
          TRACE( "returning vk mapping %p\n", buffer->map_ptr );
          return buffer->map_ptr;
-@@ -2291,6 +2339,15 @@
+@@ -2291,6 +2341,15 @@
              set_gl_error( teb, GL_INVALID_OPERATION );
              return FALSE;
          }
@@ -93,7 +104,7 @@
          unmap_vk_buffer( buffer );
      }
  
-@@ -2303,6 +2360,7 @@
+@@ -2303,6 +2362,7 @@
      }
  
      buffer->host_ptr = buffer->map_ptr = NULL;
