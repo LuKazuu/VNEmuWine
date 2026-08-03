@@ -1,152 +1,6 @@
-From 9f2c4a8b1e3d4f5a6b7c8d9e0f1a2b3c4d5e6f7a Mon Sep 17 00:00:00 2001
-From: LuKazuu port project <port@lukazuu>
-Date: Mon, 28 Jul 2026 00:00:00 +0000
-Subject: [PATCH] esync: port eventfd-based synchronization from proton-wine to
- Hangover 11.9 (v2 - production-ready)
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
-
-Ports the eventfd-based esync synchronization backend from
-The412Banner/proton-wine (Proton 11 / Wine 11.0) to AndreRH/hangover
-wine 11.9, so it can be used from a Termux build of hangover-wine on
-Android where the kernel does not expose /dev/ntsync.
-
-This is v2 of the patch. v1 was structurally correct (plumbing,
-protocol, shm, fd passing) but never executed at runtime on Android
-because five gating checks in the server only consulted
-`get_inproc_device_fd() >= 0` (i.e. /dev/ntsync exists). On Android
-that gate is always false, so the entire esync path was dead code and
-every NtSetEvent / NtReleaseMutant / NtWaitForSingleObject call fell
-back to server-side sync — observable in WINEDEBUG=+esync logs as
-525x "Failed to retrieve fd for handle ..., status 0xc0000002".
-
-v2 fixes (on top of v1):
-
-  1. server/event.c (create_event_sync, create_internal_sync):
-     added `do_esync() ||` to the gate. Without this, events created
-     on Android used event_sync_ops (server-side) instead of
-     inproc_sync_ops, and the client's get_inproc_sync_fd request
-     returned STATUS_NOT_IMPLEMENTED.
-
-  2. server/mutex.c (create_mutex_sync): same gate fix for mutexes.
-
-  3. server/semaphore.c (create_semaphore_sync): same gate fix for
-     semaphores.
-
-  4. server/thread.c (create_thread, line ~572): same gate fix for
-     thread->alert_sync. Without this, alertable waits (NtDelayExecution
-     with alertable=TRUE, NtWaitForSingleObject with alertable=TRUE)
-     had no alert fd on Android, so APCs could not interrupt waits.
-
-  5. server/thread.c (DECL_HANDLER(get_inproc_alert_fd)): explicitly
-     set reply->sync_shm_idx = 0. The field was added to the reply
-     struct by v1's protocol.def change but never written by the
-     handler, leaving it as stack garbage. Alerts don't use shm so 0
-     is correct, but the explicit assignment prevents latent bugs.
-
-  6. server/inproc_sync.c: completely refactored so that the esync
-     path is compiled and runs REGARDLESS of whether
-     NTSYNC_IOC_EVENT_READ is defined. Previously, esync code was
-     inside the `#ifdef NTSYNC_IOC_EVENT_READ` branch, so on systems
-     without linux/ntsync.h (some Termux builds) the esync code was
-     not even compiled. Now the struct definition, ops table, dump,
-     destroy, get_inproc_sync_fd, and get_obj_inproc_sync are all
-     outside the #ifdef. Each create_inproc_*_sync function checks
-     do_esync() FIRST; the ntsync fallback is inside #ifdef. This
-     means:
-       - esync ON  + ntsync available  -> esync path
-       - esync ON  + ntsync missing    -> esync path  (was: stub!)
-       - esync OFF + ntsync available  -> ntsync path
-       - esync OFF + ntsync missing    -> stub (returns NULL)
-     Also added explicit `event->esync_shm_idx = 0;` initialization
-     before the do_esync() branch in every create function, for
-     defense-in-depth (alloc_object does not zero the struct).
-
-  7. server/esync.c: replaced `shm_idx = fd + 1` with a monotonic
-     atomic counter (`shm_idx_counter`). The old scheme could collide
-     when the kernel reused a closed fd number for a different object,
-     causing two live objects to share the same shm slot and corrupt
-     each other's event->signaled / mutex->tid / semaphore->count
-     state. Also added the missing definition of esync_abandon_mutex()
-     (was declared in esync.h and called from inproc_sync.c's
-     abandon_inproc_mutexes, but never defined — would have caused a
-     link error when esync was enabled and a thread exited while
-     holding a mutex). Removed the unused `shm_name` static variable.
-
-v1 unchanged (verified correct):
-  - configure / configure.ac / include/config.h.in: add sys/eventfd.h check
-  - dlls/ntdll/Makefile.in: add unix/esync.c
-  - server/Makefile.in: add esync.c
-  - dlls/ntdll/unix/esync.c (NEW, 1267 lines): client-side impl
-  - dlls/ntdll/unix/esync.h (NEW): client-side declarations
-  - dlls/ntdll/unix/server.c: detect ESYNC_USED_BY_SERVER magic,
-    call client-side esync_init(shm_fd)
-  - dlls/ntdll/unix/sync.c: route Nt* syscalls through esync when
-    WINEESYNC=1
-  - server/esync.h (NEW): server-side declarations
-  - server/main.c: call server-side esync_init() at wineserver startup
-  - server/protocol.def: add ESYNC_USED_BY_SERVER magic (0x7eadeeee),
-    enum esync_type, sync_shm_idx field in get_inproc_sync_fd_reply
-    and get_inproc_alert_fd_reply
-  - include/wine/server_protocol.h: REGENERATED from protocol.def
-    (SERVER_PROTOCOL_VERSION bumped 934 -> 935)
-  - server/request_handlers.h: REGENERATED
-  - server/request_trace.h: REGENERATED
-  - server/thread.c init_first_thread: send ESYNC_USED_BY_SERVER
-    magic + esync shm fd to client when esync is enabled
-
-VERIFICATION:
-  - `perl tools/make_requests` on the patched tree produces ZERO
-    changes -> protocol.def and the three generated headers are
-    perfectly consistent.
-  - `git apply --check` on a fresh clone of AndreRH/wine@hangover-11.9
-    succeeds cleanly.
-  - `gcc -fsyntax-only` passes on all 8 modified/new C files, in
-    all 5 feature-combination scenarios:
-      1. HAVE_SYS_EVENTFD_H=1, HAVE_LINUX_NTSYNC_H=1  (Linux+ntsync)
-      2. HAVE_SYS_EVENTFD_H=1, HAVE_LINUX_NTSYNC_H=0  (Android/Termux)
-      3. HAVE_SYS_EVENTFD_H=0, HAVE_LINUX_NTSYNC_H=0  (non-Linux)
-      4. HAVE_SYS_EVENTFD_H=0, HAVE_LINUX_NTSYNC_H=1  (older Linux)
-      5. server/esync.c with HAVE_SYS_EVENTFD_H=0 (do_esync returns 0)
-    Pre-existing build environment errors (PACKAGE_STRING, writev,
-    __NR_futex) are present in the UNPATCHED source too and are NOT
-    introduced by this patch.
-  - All 7 functions declared in server/esync.h are now defined in
-    server/esync.c (v1 missed esync_abandon_mutex — would have been
-    a link error).
-
-RUNTIME:
-  Set WINEESYNC=1 in the environment to enable esync. When unset, the
-  build falls back to ntsync (if /dev/ntsync exists) or server-side sync.
-
-  Smoke test:
-    WINEESYNC=1 WINEDEBUG=+esync wine notepad.exe 2>&1 | grep esync:
-    # expect: "esync: up and running." and NO "Failed to retrieve fd"
-    # warnings for handle types event/mutex/semaphore.
-
-CREDITS:
-  Original esync implementation: Zebediah Figura (2018), shipped in
-  upstream Wine 3.x..8.x, dropped in Wine 9.0 in favor of NT sync
-  primitives. Proton 11 Android port: The412Banner. Hangover 11.9
-  port v1: LuKazuu. Hangover 11.9 port v2 (this patch): fixes the
-  five missing gates, the missing esync_abandon_mutex definition,
-  the shm_idx collision risk, and the #ifdef branch issue.
-
-Signed-off-by: LuKazuu port project v2
-
----
-This patch is intended to REPLACE 0011-esync-combined.patch.
-Apply on a clean checkout of AndreRH/wine @ tag hangover-11.9:
-    cd wine
-    git checkout hangover-11.9
-    git apply 0011-esync-combined-v2.patch
-
-diff --git a/configure.ac b/configure.ac
-index 314bba4..5ca6729 100644
---- a/configure.ac
-+++ b/configure.ac
-@@ -773,6 +773,7 @@ AC_CHECK_HEADERS(\
+--- a/configure.ac	2026-07-24 20:42:32.000000000 +0000
++++ b/configure.ac	2026-08-03 01:16:48.829730904 +0000
+@@ -774,6 +774,7 @@
  	sys/cdio.h \
  	sys/epoll.h \
  	sys/event.h \
@@ -154,11 +8,9 @@ index 314bba4..5ca6729 100644
  	sys/extattr.h \
  	sys/filio.h \
  	sys/ipc.h \
-diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
-index 022583a..6e0f2ab 100644
---- a/dlls/ntdll/Makefile.in
-+++ b/dlls/ntdll/Makefile.in
-@@ -52,6 +52,7 @@ SOURCES = \
+--- a/dlls/ntdll/Makefile.in	2026-07-24 20:42:32.000000000 +0000
++++ b/dlls/ntdll/Makefile.in	2026-08-03 01:16:48.829730904 +0000
+@@ -53,6 +53,7 @@
  	unix/cdrom.c \
  	unix/debug.c \
  	unix/env.c \
@@ -166,12 +18,9 @@ index 022583a..6e0f2ab 100644
  	unix/file.c \
  	unix/loader.c \
  	unix/loadorder.c \
-diff --git a/dlls/ntdll/unix/esync.c b/dlls/ntdll/unix/esync.c
-new file mode 100644
-index 0000000..5254595
 --- /dev/null
-+++ b/dlls/ntdll/unix/esync.c
-@@ -0,0 +1,1267 @@
++++ b/dlls/ntdll/unix/esync.c	2026-08-03 01:39:03.844410379 +0000
+@@ -0,0 +1,1266 @@
 +/*
 + * eventfd-based synchronization objects
 + *
@@ -300,7 +149,11 @@ index 0000000..5254595
 +        int new_size = max(shm_addrs_size * 2, entry + 1);
 +
 +        if (!(shm_addrs = realloc( shm_addrs, new_size * sizeof(shm_addrs[0]) )))
++        {
 +            ERR("Failed to grow shm_addrs array to size %d.\n", shm_addrs_size);
++            pthread_mutex_unlock( &shm_addrs_mutex );
++            return NULL;
++        }
 +        memset( shm_addrs + shm_addrs_size, 0, (new_size - shm_addrs_size) * sizeof(shm_addrs[0]) );
 +        shm_addrs_size = new_size;
 +    }
@@ -1422,12 +1275,7 @@ index 0000000..5254595
 +        HANDLE handle;
 +        NTSTATUS ret;
 +
-+        ret = create_esync( 0, &handle, 0, NULL, 0, 0 );
-+        if (ret != STATUS_NOT_IMPLEMENTED)
-+        {
-+            ERR("Server is running with WINEESYNC but this process is not, please enable WINEESYNC or restart wineserver.\n");
-+            exit(1);
-+        }
++        WARN("Server passed ESYNC_USED_BY_SERVER, but WINEESYNC is disabled in this process.\n");
 +
 +        return;
 +    }
@@ -1439,11 +1287,8 @@ index 0000000..5254595
 +    shm_addrs = calloc( 128, sizeof(shm_addrs[0]) );
 +    shm_addrs_size = 128;
 +}
-diff --git a/dlls/ntdll/unix/esync.h b/dlls/ntdll/unix/esync.h
-new file mode 100644
-index 0000000..1d01261
 --- /dev/null
-+++ b/dlls/ntdll/unix/esync.h
++++ b/dlls/ntdll/unix/esync.h	2026-08-03 01:16:48.829730904 +0000
 @@ -0,0 +1,61 @@
 +/*
 + * eventfd-based synchronization objects
@@ -1506,10 +1351,8 @@ index 0000000..1d01261
 +extern pthread_mutex_t fd_cache_mutex;
 +
 +extern int receive_fd( obj_handle_t *handle );
-diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
-index 14b8bc7..be09bc7 100644
---- a/dlls/ntdll/unix/server.c
-+++ b/dlls/ntdll/unix/server.c
+--- a/dlls/ntdll/unix/server.c	2026-07-24 20:42:32.000000000 +0000
++++ b/dlls/ntdll/unix/server.c	2026-08-03 01:16:48.829730904 +0000
 @@ -78,6 +78,7 @@
  #include "wine/server.h"
  #include "wine/debug.h"
@@ -1518,7 +1361,7 @@ index 14b8bc7..be09bc7 100644
  #include "ddk/wdm.h"
  
  WINE_DEFAULT_DEBUG_CHANNEL(server);
-@@ -1701,8 +1702,16 @@ size_t server_init_process(void)
+@@ -1696,8 +1697,16 @@
              supported_machines_count = wine_server_reply_size( reply ) / sizeof(*supported_machines);
              if (reply->inproc_device)
              {
@@ -1537,10 +1380,8 @@ index 14b8bc7..be09bc7 100644
              }
          }
      }
-diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index fbf054e..8c945d7 100644
---- a/dlls/ntdll/unix/sync.c
-+++ b/dlls/ntdll/unix/sync.c
+--- a/dlls/ntdll/unix/sync.c	2026-07-24 20:42:32.000000000 +0000
++++ b/dlls/ntdll/unix/sync.c	2026-08-03 01:16:48.829730904 +0000
 @@ -72,6 +72,8 @@
  #include "wine/debug.h"
  #include "unix_private.h"
@@ -1550,7 +1391,7 @@ index fbf054e..8c945d7 100644
  WINE_DEFAULT_DEBUG_CHANNEL(sync);
  
  HANDLE keyed_event = 0;
-@@ -763,6 +765,12 @@ void close_inproc_sync( HANDLE handle )
+@@ -763,6 +765,12 @@
  {
      struct inproc_sync *cache;
  
@@ -1563,7 +1404,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return;
      if ((cache = get_cached_inproc_sync( handle )))
      {
-@@ -778,6 +786,7 @@ static NTSTATUS inproc_release_semaphore( HANDLE handle, ULONG count, ULONG *pre
+@@ -778,6 +786,7 @@
      struct inproc_sync stack, *sync;
      NTSTATUS ret;
  
@@ -1571,7 +1412,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
      if ((ret = get_inproc_sync( handle, INPROC_SYNC_SEMAPHORE, SEMAPHORE_MODIFY_STATE, &stack, &sync ))) return ret;
      ret = linux_release_semaphore_obj( sync->fd, count, prev_count );
-@@ -790,6 +799,7 @@ static NTSTATUS inproc_query_semaphore( HANDLE handle, SEMAPHORE_BASIC_INFORMATI
+@@ -790,6 +799,7 @@
      struct inproc_sync stack, *sync;
      NTSTATUS ret;
  
@@ -1579,7 +1420,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
      if ((ret = get_inproc_sync( handle, INPROC_SYNC_SEMAPHORE, SEMAPHORE_QUERY_STATE, &stack, &sync ))) return ret;
      ret = linux_query_semaphore_obj( sync->fd, info );
-@@ -802,6 +812,7 @@ static NTSTATUS inproc_set_event( HANDLE handle, LONG *prev_state )
+@@ -802,6 +812,7 @@
      struct inproc_sync stack, *sync;
      NTSTATUS ret;
  
@@ -1587,7 +1428,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
      if ((ret = get_inproc_sync( handle, INPROC_SYNC_EVENT, EVENT_MODIFY_STATE, &stack, &sync ))) return ret;
      ret = linux_set_event_obj( sync->fd, prev_state );
-@@ -814,6 +825,7 @@ static NTSTATUS inproc_reset_event( HANDLE handle, LONG *prev_state )
+@@ -814,6 +825,7 @@
      struct inproc_sync stack, *sync;
      NTSTATUS ret;
  
@@ -1595,7 +1436,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
      if ((ret = get_inproc_sync( handle, INPROC_SYNC_EVENT, EVENT_MODIFY_STATE, &stack, &sync ))) return ret;
      ret = linux_reset_event_obj( sync->fd, prev_state );
-@@ -826,6 +838,7 @@ static NTSTATUS inproc_pulse_event( HANDLE handle, LONG *prev_state )
+@@ -826,6 +838,7 @@
      struct inproc_sync stack, *sync;
      NTSTATUS ret;
  
@@ -1603,7 +1444,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
      if ((ret = get_inproc_sync( handle, INPROC_SYNC_EVENT, EVENT_MODIFY_STATE, &stack, &sync ))) return ret;
      ret = linux_pulse_event_obj( sync->fd, prev_state );
-@@ -838,6 +851,7 @@ static NTSTATUS inproc_query_event( HANDLE handle, EVENT_BASIC_INFORMATION *info
+@@ -838,6 +851,7 @@
      struct inproc_sync stack, *sync;
      NTSTATUS ret;
  
@@ -1611,7 +1452,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
      if ((ret = get_inproc_sync( handle, INPROC_SYNC_EVENT, EVENT_QUERY_STATE, &stack, &sync ))) return ret;
      ret = linux_query_event_obj( sync->fd, info );
-@@ -850,6 +864,7 @@ static NTSTATUS inproc_release_mutex( HANDLE handle, LONG *prev_count )
+@@ -850,6 +864,7 @@
      struct inproc_sync stack, *sync;
      NTSTATUS ret;
  
@@ -1619,7 +1460,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
      if ((ret = get_inproc_sync( handle, INPROC_SYNC_MUTEX, 0, &stack, &sync ))) return ret;
      ret = linux_release_mutex_obj( sync->fd, prev_count );
-@@ -862,6 +877,7 @@ static NTSTATUS inproc_query_mutex( HANDLE handle, MUTANT_BASIC_INFORMATION *inf
+@@ -862,6 +877,7 @@
      struct inproc_sync stack, *sync;
      NTSTATUS ret;
  
@@ -1627,7 +1468,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
      if ((ret = get_inproc_sync( handle, INPROC_SYNC_MUTEX, MUTANT_QUERY_STATE, &stack, &sync ))) return ret;
      ret = linux_query_mutex_obj( sync->fd, info );
-@@ -903,6 +919,7 @@ static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, WAIT_TYPE type,
+@@ -903,6 +919,7 @@
      int objs[ARRAY_SIZE(syncs)], alert_fd = 0;
      NTSTATUS ret;
  
@@ -1635,7 +1476,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
  
      assert( count <= ARRAY_SIZE(syncs) );
-@@ -931,6 +948,7 @@ static NTSTATUS inproc_signal_and_wait( HANDLE signal, HANDLE wait,
+@@ -931,6 +948,7 @@
      int alert_fd = 0;
      NTSTATUS ret;
  
@@ -1643,7 +1484,7 @@ index fbf054e..8c945d7 100644
      if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
  
      if ((ret = get_inproc_sync( signal, INPROC_SYNC_UNKNOWN, 0, &stack_signal, &signal_sync ))) return ret;
-@@ -2423,6 +2441,12 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+@@ -2423,6 +2441,12 @@
      /* if alertable, we need to query the server */
      if (alertable)
      {
@@ -1656,11 +1497,9 @@ index fbf054e..8c945d7 100644
          /* Since server_wait will result in an unconditional implicit yield,
             we never return STATUS_NO_YIELD_PERFORMED */
          if ((status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout )) == STATUS_TIMEOUT)
-diff --git a/include/config.h.in b/include/config.h.in
-index 551771e..5759c0c 100644
---- a/include/config.h.in
-+++ b/include/config.h.in
-@@ -528,6 +528,9 @@
+--- a/include/config.h.in	2026-07-24 20:42:32.000000000 +0000
++++ b/include/config.h.in	2026-08-03 01:16:48.829730904 +0000
+@@ -534,6 +534,9 @@
  /* Define to 1 if you have the <sys/event.h> header file. */
  #undef HAVE_SYS_EVENT_H
  
@@ -1670,9 +1509,8 @@ index 551771e..5759c0c 100644
  /* Define to 1 if you have the <sys/extattr.h> header file. */
  #undef HAVE_SYS_EXTATTR_H
  
-diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
---- a/include/wine/server_protocol.h
-+++ b/include/wine/server_protocol.h
+--- a/include/wine/server_protocol.h	2026-07-24 20:42:32.000000000 +0000
++++ b/include/wine/server_protocol.h	2026-08-03 01:16:48.829730904 +0000
 @@ -6041,6 +6041,19 @@
  };
  
@@ -1719,11 +1557,9 @@ diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
 +#define SERVER_PROTOCOL_VERSION 958
  
  #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
-diff --git a/server/Makefile.in b/server/Makefile.in
-index 84a6bd7..fbb3af8 100644
---- a/server/Makefile.in
-+++ b/server/Makefile.in
-@@ -13,6 +13,7 @@ SOURCES = \
+--- a/server/Makefile.in	2026-07-24 20:42:32.000000000 +0000
++++ b/server/Makefile.in	2026-08-03 01:16:48.829730904 +0000
+@@ -14,6 +14,7 @@
  	device.c \
  	directory.c \
  	event.c \
@@ -1731,11 +1567,8 @@ index 84a6bd7..fbb3af8 100644
  	fd.c \
  	file.c \
  	handle.c \
-diff --git a/server/esync.c b/server/esync.c
-new file mode 100644
-index 0000000..371aa00
 --- /dev/null
-+++ b/server/esync.c
++++ b/server/esync.c	2026-08-03 01:16:48.829730904 +0000
 @@ -0,0 +1,268 @@
 +/*
 + * eventfd-based synchronization objects (server side)
@@ -2005,11 +1838,8 @@ index 0000000..371aa00
 +            perror( "esync: abandon write" );
 +    }
 +}
-diff --git a/server/esync.h b/server/esync.h
-new file mode 100644
-index 0000000..f5071c7
 --- /dev/null
-+++ b/server/esync.h
++++ b/server/esync.h	2026-08-03 01:16:48.829730904 +0000
 @@ -0,0 +1,37 @@
 +/*
 + * eventfd-based synchronization objects
@@ -2048,10 +1878,8 @@ index 0000000..f5071c7
 +void esync_abandon_mutex( int fd, unsigned int shm_idx, thread_id_t tid );
 +
 +#endif /* __WINE_SERVER_ESYNC_H */
-diff --git a/server/event.c b/server/event.c
-index cbc7af1..2ab4bff 100644
---- a/server/event.c
-+++ b/server/event.c
+--- a/server/event.c	2026-07-24 20:42:32.000000000 +0000
++++ b/server/event.c	2026-08-03 01:16:48.829730904 +0000
 @@ -34,6 +34,7 @@
  #include "thread.h"
  #include "request.h"
@@ -2060,7 +1888,7 @@ index cbc7af1..2ab4bff 100644
  
  static const WCHAR event_name[] = {'E','v','e','n','t'};
  
-@@ -90,7 +91,8 @@ static struct object *create_event_sync( int manual, int signaled )
+@@ -77,7 +78,8 @@
  {
      struct event_sync *event;
  
@@ -2070,7 +1898,7 @@ index cbc7af1..2ab4bff 100644
  
      if (!(event = alloc_object( &event_sync_ops ))) return NULL;
      event->manual   = manual;
-@@ -112,7 +114,8 @@ struct event_sync *create_server_internal_sync( int manual, int signaled )
+@@ -99,7 +101,8 @@
  
  struct object *create_internal_sync( int manual, int signaled )
  {
@@ -2080,23 +1908,25 @@ index cbc7af1..2ab4bff 100644
      return (struct object *)create_server_internal_sync( manual, signaled );
  }
  
-diff --git a/server/inproc_sync.c b/server/inproc_sync.c
---- a/server/inproc_sync.c
-+++ b/server/inproc_sync.c
-@@ -33,6 +33,12 @@
+--- a/server/inproc_sync.c	2026-07-24 20:42:32.000000000 +0000
++++ b/server/inproc_sync.c	2026-08-03 01:38:46.840410379 +0000
+@@ -33,11 +33,14 @@
  #include "thread.h"
  #include "user.h"
  
 +#include "esync.h"
 +
-+#ifdef HAVE_SYS_EVENTFD_H
-+# include <sys/eventfd.h>
-+#endif
++#include <sys/eventfd.h>
 +
  #ifdef HAVE_LINUX_NTSYNC_H
  # include <linux/ntsync.h>
  #endif
-@@ -56,6 +62,7 @@
+ 
+-#ifdef NTSYNC_IOC_EVENT_READ
+ 
+ #include <fcntl.h>
+ #include <sys/ioctl.h>
+@@ -56,6 +59,7 @@
      struct object          obj;  /* object header */
      enum inproc_sync_type  type;
      int                    fd;
@@ -2104,7 +1934,7 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
      struct list            entry;
  };
  
-@@ -82,78 +89,170 @@
+@@ -82,78 +86,170 @@
  
  struct inproc_sync *create_inproc_internal_sync( int manual, int signaled )
  {
@@ -2191,8 +2021,7 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
 +            return NULL;
 +        }
 +        return event;
-     }
--    return event;
++    }
 +#ifdef NTSYNC_IOC_EVENT_READ
 +    {
 +        struct ntsync_event_args args = {.signaled = signaled, .manual = manual};
@@ -2208,7 +2037,8 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
 +            return NULL;
 +        }
 +        return event;
-+    }
+     }
+-    return event;
 +#else
 +    return NULL;
 +#endif
@@ -2299,7 +2129,8 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
 +            return NULL;
 +        }
 +        return sem;
-+    }
+     }
+-    return sem;
 +#ifdef NTSYNC_IOC_EVENT_READ
 +    {
 +        struct ntsync_sem_args args = {.count = initial, .max = max};
@@ -2315,15 +2146,14 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
 +            return NULL;
 +        }
 +        return sem;
-     }
--    return sem;
++    }
 +#else
 +    return NULL;
 +#endif
  }
  
  static void inproc_sync_dump( struct object *obj, int verbose )
-@@ -165,16 +264,26 @@
+@@ -165,16 +261,26 @@
  
  void signal_inproc_sync( struct inproc_sync *sync )
  {
@@ -2354,7 +2184,7 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
  }
  
  static int inproc_sync_signal( struct object *obj, unsigned int access, int signal )
-@@ -202,11 +311,19 @@
+@@ -202,11 +308,19 @@
  {
      struct inproc_sync *mutex;
  
@@ -2375,7 +2205,7 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
  {
      struct object *sync;
      int fd = -1;
-@@ -217,6 +334,7 @@
+@@ -217,62 +331,13 @@
          struct inproc_sync *inproc = (struct inproc_sync *)sync;
          *type = inproc->type;
          fd = inproc->fd;
@@ -2383,16 +2213,63 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
      }
  
      release_object( sync );
-@@ -267,7 +385,7 @@
- {
+     return fd;
  }
  
+-#else /* NTSYNC_IOC_EVENT_READ */
+-
+-int get_inproc_device_fd(void)
+-{
+-    return -1;
+-}
+-
+-int get_inproc_sync_fd( struct inproc_sync *sync )
+-{
+-    return -1;
+-}
+-
+-struct inproc_sync *create_inproc_internal_sync( int manual, int signaled )
+-{
+-    return NULL;
+-}
+-
+-struct inproc_sync *create_inproc_event_sync( int manual, int signaled )
+-{
+-    return NULL;
+-}
+-
+-struct inproc_sync *create_inproc_mutex_sync( thread_id_t owner, unsigned int count )
+-{
+-    return NULL;
+-}
+-
+-struct inproc_sync *create_inproc_semaphore_sync( unsigned int initial, unsigned int max )
+-{
+-    return NULL;
+-}
+-
+-void signal_inproc_sync( struct inproc_sync *sync )
+-{
+-}
+-
+-void reset_inproc_sync( struct inproc_sync *sync )
+-{
+-}
+-
+-void abandon_inproc_mutexes( thread_id_t tid )
+-{
+-}
+-
 -static int get_obj_inproc_sync( struct object *obj, int *type )
-+static int get_obj_inproc_sync( struct object *obj, int *type, unsigned int *esync_shm_idx )
+-{
+-    return -1;
+-}
+-
+-#endif /* NTSYNC_IOC_EVENT_READ */
+ 
+ DECL_HANDLER(get_inproc_sync_fd)
  {
-     return -1;
- }
-@@ -283,8 +401,16 @@
+@@ -283,8 +348,16 @@
  
      reply->access = get_handle_access( current->process, req->handle );
  
@@ -2411,10 +2288,8 @@ diff --git a/server/inproc_sync.c b/server/inproc_sync.c
  
      release_object( obj );
  }
-diff --git a/server/main.c b/server/main.c
-index 46419a0..24a5310 100644
---- a/server/main.c
-+++ b/server/main.c
+--- a/server/main.c	2026-07-24 20:42:32.000000000 +0000
++++ b/server/main.c	2026-08-03 01:16:48.829730904 +0000
 @@ -40,6 +40,7 @@
  #include "thread.h"
  #include "request.h"
@@ -2423,7 +2298,7 @@ index 46419a0..24a5310 100644
  
  /* command-line options */
  int debug_level = 0;
-@@ -259,6 +260,9 @@ int main( int argc, char *argv[] )
+@@ -259,6 +260,9 @@
      sock_init();
      open_master_socket();
  
@@ -2433,10 +2308,8 @@ index 46419a0..24a5310 100644
      if (debug_level) fprintf( stderr, "wineserver: starting (pid=%ld)\n", (long) getpid() );
      set_current_time();
      init_signals();
-diff --git a/server/mutex.c b/server/mutex.c
-index 5beffed..4868356 100644
---- a/server/mutex.c
-+++ b/server/mutex.c
+--- a/server/mutex.c	2026-07-24 20:42:32.000000000 +0000
++++ b/server/mutex.c	2026-08-03 01:16:48.829730904 +0000
 @@ -34,6 +34,7 @@
  #include "thread.h"
  #include "request.h"
@@ -2445,7 +2318,7 @@ index 5beffed..4868356 100644
  
  static const WCHAR mutex_name[] = {'M','u','t','a','n','t'};
  
-@@ -156,7 +157,8 @@ static struct object *create_mutex_sync( int owned )
+@@ -143,7 +144,8 @@
  {
      struct mutex_sync *mutex;
  
@@ -2455,11 +2328,9 @@ index 5beffed..4868356 100644
  
      if (!(mutex = alloc_object( &mutex_sync_ops ))) return NULL;
      mutex->count = 0;
-diff --git a/server/protocol.def b/server/protocol.def
-index 3ee3be6..ea2609e 100644
---- a/server/protocol.def
-+++ b/server/protocol.def
-@@ -4162,6 +4162,24 @@ struct handle_info
+--- a/server/protocol.def	2026-07-24 20:42:32.000000000 +0000
++++ b/server/protocol.def	2026-08-03 01:16:48.829730904 +0000
+@@ -4208,6 +4208,24 @@
  @END
  
  
@@ -2484,7 +2355,7 @@ index 3ee3be6..ea2609e 100644
  enum inproc_sync_type
  {
      INPROC_SYNC_UNKNOWN   = 0,
-@@ -4177,6 +4195,7 @@ enum inproc_sync_type
+@@ -4223,6 +4241,7 @@
  @REPLY
      int           type;         /* inproc sync type */
      unsigned int access;        /* handle access rights */
@@ -2492,7 +2363,7 @@ index 3ee3be6..ea2609e 100644
  @END
  
  
-@@ -4184,6 +4203,7 @@ enum inproc_sync_type
+@@ -4230,6 +4249,7 @@
  @REQ(get_inproc_alert_fd)
  @REPLY
      obj_handle_t handle;        /* alert fd is in flight with this handle */
@@ -2500,11 +2371,9 @@ index 3ee3be6..ea2609e 100644
  @END
  
  
-diff --git a/server/request_handlers.h b/server/request_handlers.h
-index cf80212..c26c1d6 100644
---- a/server/request_handlers.h
-+++ b/server/request_handlers.h
-@@ -2320,9 +2320,11 @@ C_ASSERT( offsetof(struct get_inproc_sync_fd_request, handle) == 12 );
+--- a/server/request_handlers.h	2026-07-24 20:42:32.000000000 +0000
++++ b/server/request_handlers.h	2026-08-03 01:16:48.829730904 +0000
+@@ -2330,9 +2330,11 @@
  C_ASSERT( sizeof(struct get_inproc_sync_fd_request) == 16 );
  C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, type) == 8 );
  C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, access) == 12 );
@@ -2517,11 +2386,9 @@ index cf80212..c26c1d6 100644
  C_ASSERT( sizeof(struct get_inproc_alert_fd_reply) == 16 );
  C_ASSERT( offsetof(struct d3dkmt_object_create_request, type) == 12 );
  C_ASSERT( offsetof(struct d3dkmt_object_create_request, fd) == 16 );
-diff --git a/server/request_trace.h b/server/request_trace.h
-index 4b0ddc1..051500c 100644
---- a/server/request_trace.h
-+++ b/server/request_trace.h
-@@ -3401,6 +3401,7 @@ static void dump_get_inproc_sync_fd_reply( const struct get_inproc_sync_fd_reply
+--- a/server/request_trace.h	2026-07-24 20:42:32.000000000 +0000
++++ b/server/request_trace.h	2026-08-03 01:16:48.833730904 +0000
+@@ -3411,6 +3411,7 @@
  {
      fprintf( stderr, " type=%d", req->type );
      fprintf( stderr, ", access=%08x", req->access );
@@ -2529,7 +2396,7 @@ index 4b0ddc1..051500c 100644
  }
  
  static void dump_get_inproc_alert_fd_request( const struct get_inproc_alert_fd_request *req )
-@@ -3410,6 +3411,7 @@ static void dump_get_inproc_alert_fd_request( const struct get_inproc_alert_fd_r
+@@ -3420,6 +3421,7 @@
  static void dump_get_inproc_alert_fd_reply( const struct get_inproc_alert_fd_reply *req )
  {
      fprintf( stderr, " handle=%04x", req->handle );
@@ -2537,10 +2404,8 @@ index 4b0ddc1..051500c 100644
  }
  
  static void dump_d3dkmt_object_create_request( const struct d3dkmt_object_create_request *req )
-diff --git a/server/semaphore.c b/server/semaphore.c
-index 4c36000..8371092 100644
---- a/server/semaphore.c
-+++ b/server/semaphore.c
+--- a/server/semaphore.c	2026-07-24 20:42:32.000000000 +0000
++++ b/server/semaphore.c	2026-08-03 01:16:48.833730904 +0000
 @@ -34,6 +34,7 @@
  #include "thread.h"
  #include "request.h"
@@ -2549,7 +2414,7 @@ index 4c36000..8371092 100644
  
  static const WCHAR semaphore_name[] = {'S','e','m','a','p','h','o','r','e'};
  
-@@ -133,7 +134,8 @@ static struct object *create_semaphore_sync( unsigned int initial, unsigned int
+@@ -119,7 +120,8 @@
  {
      struct semaphore_sync *sem;
  
@@ -2559,10 +2424,8 @@ index 4c36000..8371092 100644
  
      if (!(sem = alloc_object( &semaphore_sync_ops ))) return NULL;
      sem->count = initial;
-diff --git a/server/thread.c b/server/thread.c
-index 19c928f..a57253f 100644
---- a/server/thread.c
-+++ b/server/thread.c
+--- a/server/thread.c	2026-07-24 20:42:32.000000000 +0000
++++ b/server/thread.c	2026-08-03 01:38:56.356410379 +0000
 @@ -60,6 +60,8 @@
  #include "user.h"
  #include "security.h"
@@ -2572,7 +2435,7 @@ index 19c928f..a57253f 100644
  
  /* thread queues */
  
-@@ -567,7 +569,8 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+@@ -515,7 +517,8 @@
      }
      if (!(thread->request_fd = create_anonymous_fd( &thread_fd_ops, fd, &thread->obj, 0 ))) goto error;
      if (!(thread->sync = create_internal_sync( 1, 0 ))) goto error;
@@ -2582,19 +2445,21 @@ index 19c928f..a57253f 100644
  
      if (process->desktop)
      {
-@@ -1790,6 +1793,11 @@ DECL_HANDLER(init_first_thread)
-         reply->inproc_device = get_process_id( process ) | 1;
-         send_client_fd( process, fd, reply->inproc_device );
-     }
-+    else if (do_esync())
+@@ -1737,7 +1740,12 @@
+     set_reply_data( supported_machines,
+                     min( supported_machines_count * sizeof(unsigned short), get_reply_max_size() ));
+ 
+-    if ((fd = get_inproc_device_fd()) >= 0)
++    if (do_esync())
 +    {
 +        reply->inproc_device = ESYNC_USED_BY_SERVER;
 +        send_client_fd( process, esync_get_shm_fd(), reply->inproc_device );
 +    }
- }
- 
- /* initialize a new thread */
-@@ -2425,6 +2433,7 @@ DECL_HANDLER(get_inproc_alert_fd)
++    else if ((fd = get_inproc_device_fd()) >= 0)
+     {
+         reply->inproc_device = get_process_id( process ) | 1;
+         send_client_fd( process, fd, reply->inproc_device );
+@@ -2377,6 +2385,7 @@
      else
      {
          reply->handle = get_thread_id( current ) | 1; /* arbitrary token */

@@ -22,7 +22,7 @@ index 5a3ef00..afa7644 100644
 +        const char *vmem_max_size_env = getenv( "WINEVMEMMAXSIZE" );
 +        if (vmem_max_size_env)
 +        {
-+            vmem_max_size = (SIZE_T)strtol(vmem_max_size_env, NULL, 10) << 20;
++            vmem_max_size = (SIZE_T)strtoull(vmem_max_size_env, NULL, 10) << 20;
 +            TRACE( "WINEVMEMMAXSIZE=%s -> %lu MB\n", vmem_max_size_env, (unsigned long)(vmem_max_size >> 20) );
 +        }
 +    }

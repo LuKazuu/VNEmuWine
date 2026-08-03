@@ -107,7 +107,7 @@ diff -uNr a/programs/winebrowser/main.c b/programs/winebrowser/main.c
  {
      static const WCHAR defaultmailers[] =
 -        L"/usr/bin/open\0"
-+        L"@TERMUX_PREFIX@/bin/open"
++        L"@TERMUX_PREFIX@/bin/open\0"
 +        "/usr/bin/open\0"
          "xdg-email\0"
          "mozilla-thunderbird\0"

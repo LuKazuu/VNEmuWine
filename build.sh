@@ -106,7 +106,9 @@ termux_step_pre_configure() {
         CXXFLAGS="${CXXFLAGS/-fstack-protector-strong/}"
         LDFLAGS="${LDFLAGS/-Wl,-z,relro,-z,now/}"
         LDFLAGS+=" -landroid-spawn"
-        LDFLAGS+=" -Wl,--rosegment"
+        LDFLAGS+=" -Wl,--rosegment -Wl,--gc-sections -Wl,--icf=safe"
+        CFLAGS+=" -ffunction-sections -fdata-sections"
+        CXXFLAGS+=" -ffunction-sections -fdata-sections"
 }
 termux_step_make() {
         make -j $TERMUX_PKG_MAKE_PROCESSES
@@ -142,4 +144,13 @@ termux_step_post_make_install() {
         curl -L "https://raw.githubusercontent.com/FEX-Emu/FEX/main/LICENSE" -o "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex/copyright
         cp "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex/copyright "$TERMUX_PREFIX"/share/doc/hangover-libwow64fex/copyright
         curl -L "https://raw.githubusercontent.com/ptitSeb/box64/main/LICENSE" -o "$TERMUX_PREFIX"/share/doc/hangover-wowbox64/copyright
+
+        # --- SIZE REDUCTION OPTIMIZATIONS ---
+        echo "Reducing package disk footprint..."
+        # 1. Remove static development libraries and C headers (only needed for compiling code against wine)
+        find "$TERMUX_PREFIX/opt/hangover-wine" -type f \( -name "*.a" -o -name "*.lib" -o -name "*.def" \) -delete
+        rm -rf "$TERMUX_PREFIX/opt/hangover-wine/include" "$TERMUX_PREFIX/opt/hangover-wine/share/man"
+        # 2. Deep-strip DWARF debug tables and unneeded symbols from PE (.dll, .exe, .drv, .sys) and ELF (.so) binaries
+        find "$TERMUX_PREFIX/opt/hangover-wine" -type f \( -name "*.dll" -o -name "*.exe" -o -name "*.so" -o -name "*.drv" -o -name "*.sys" \) -exec llvm-strip --strip-unneeded {} + 2>/dev/null || true
+        echo "Size reduction optimization complete!"
 }

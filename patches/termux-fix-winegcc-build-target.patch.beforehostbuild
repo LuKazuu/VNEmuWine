@@ -8,7 +8,7 @@
      if (target_name)
      {
 +        if (strstr(target_name, "android")) {
-+            if (strstr(target_name, "arm")) {
++            if (strstr(target_name, "armv7") || (!strstr(target_name, "aarch64") && !strstr(target_name, "arm64") && strstr(target_name, "arm"))) {
 +                str = strmake( "%s24", "armv7a-linux-androideabi" );
 +            } else {
 +                str = strmake( "%s24", target_name );
