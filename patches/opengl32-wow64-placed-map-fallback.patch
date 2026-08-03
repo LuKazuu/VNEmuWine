@@ -1,0 +1,103 @@
+--- a/dlls/opengl32/unix_wgl.c	2026-08-03 14:51:39.096902805 +0000
++++ b/dlls/opengl32/unix_wgl.c	2026-08-03 14:34:38.475256382 +0000
+@@ -149,6 +149,7 @@
+     void *vm_ptr;
+     SIZE_T vm_size;
+     BOOL pinned;
++    BOOL copy_map;      /* driver did not honor placed mapping; use copy fallback */
+ 
+     /* members of Vulkan-backed buffer storages */
+     struct vk_device *vk_device;
+@@ -1910,6 +1911,19 @@
+ 
+     if (!buffer->vk_memory) return;
+ 
++    if (buffer->copy_map)
++    {
++        /* copy fallback: push the app's writes from the vm mirror to the host mapping,
++         * then flush the flushed range of the (whole-buffer) host mapping. */
++        size_t map_offset = (char *)buffer->map_ptr - (char *)buffer->vm_ptr;
++
++        if (offset < map_offset) offset = map_offset;
++        if (offset + length > buffer->size) length = buffer->size - offset;
++        memcpy( (char *)buffer->host_ptr + offset, (char *)buffer->map_ptr + (offset - map_offset), length );
++        memory_range.offset = offset;
++        memory_range.size = length;
++    }
++
+     vr = buffer->vk_device->p_vkFlushMappedMemoryRanges( buffer->vk_device->vk_device, 1, &memory_range );
+     if (vr) ERR( "vkFlushMappedMemoryRanges failed: %x\n", vr );
+ }
+@@ -2073,13 +2087,47 @@
+ 
+         if (!buffer_vm_alloc( teb, buffer, buffer->size )) return NULL;
+         placed_info.pPlacedAddress = buffer->vm_ptr;
++        buffer->copy_map = FALSE;
+         vr = vk_device->p_vkMapMemory2KHR( vk_device->vk_device, &map_info, &buffer->host_ptr );
+         if (vr)
+         {
+             ERR( "vkMapMemory2KHR failed: %d\n", vr );
+             return NULL;
+         }
+-        assert( buffer->host_ptr == buffer->vm_ptr );
++        if (buffer->host_ptr != buffer->vm_ptr)
++        {
++            /* The driver advertises VK_EXT_map_memory_placed but did not place the mapping
++             * at the requested address, so it returned a 64-bit host pointer the 32-bit app
++             * cannot use. Fall back to a copy-based mapping through the low-address vm
++             * buffer, mirroring the non-Vulkan copy path (flush/unmap sync the data). */
++            VkMemoryUnmapInfoKHR unmap_info =
++            {
++                .sType = VK_STRUCTURE_TYPE_MEMORY_UNMAP_INFO_KHR,
++                .memory = buffer->vk_memory,
++                .flags = VK_MEMORY_UNMAP_RESERVE_BIT_EXT,
++            };
++
++            if (!offset && !length) length = buffer->size;
++            if (offset + length > buffer->size) length = buffer->size - offset;
++            vk_device->p_vkUnmapMemory2KHR( vk_device->vk_device, &unmap_info );
++
++            map_info.flags = 0;
++            map_info.pNext = NULL;
++            vr = vk_device->p_vkMapMemory2KHR( vk_device->vk_device, &map_info, &buffer->host_ptr );
++            if (vr)
++            {
++                ERR( "vkMapMemory2KHR (fallback) failed: %d\n", vr );
++                return NULL;
++            }
++
++            buffer->map_ptr = (char *)buffer->vm_ptr + offset;
++            buffer->copy_length = length;
++            buffer->copy_map = TRUE;
++            if (!(access & (GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT)))
++                memcpy( buffer->map_ptr, (char *)buffer->host_ptr + offset, length );
++            TRACE( "placed mapping not honored; using copy fallback %p\n", buffer->map_ptr );
++            return buffer->map_ptr;
++        }
+         buffer->map_ptr = (char *)buffer->vm_ptr + offset;
+         TRACE( "returning vk mapping %p\n", buffer->map_ptr );
+         return buffer->map_ptr;
+@@ -2291,6 +2339,15 @@
+             set_gl_error( teb, GL_INVALID_OPERATION );
+             return FALSE;
+         }
++        if (buffer->copy_map && buffer->copy_length)
++        {
++            size_t map_offset = (char *)buffer->map_ptr - (char *)buffer->vm_ptr;
++
++            TRACE( "Copying %#zx from wow64 buffer %p to buffer %p\n", buffer->copy_length,
++                   buffer->map_ptr, buffer->host_ptr );
++            memcpy( (char *)buffer->host_ptr + map_offset, buffer->map_ptr, buffer->copy_length );
++            buffer->copy_length = 0;
++        }
+         unmap_vk_buffer( buffer );
+     }
+ 
+@@ -2303,6 +2360,7 @@
+     }
+ 
+     buffer->host_ptr = buffer->map_ptr = NULL;
++    buffer->copy_map = FALSE;
+     return TRUE;
+ }
+ 
