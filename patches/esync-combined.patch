@@ -1,3 +1,18 @@
+--- a/configure	2026-07-24 20:42:32.000000000 +0000
++++ b/configure	2026-08-03 01:16:48.829730904 +0000
+@@ -11077,6 +11077,12 @@
+   printf '%s\n' "#define HAVE_SYS_EVENT_H 1" >>confdefs.h
+ 
+ fi
++ac_fn_c_check_header_compile "$LINENO" "sys/eventfd.h" "ac_cv_header_sys_eventfd_h" "$ac_includes_default"
++if test "x$ac_cv_header_sys_eventfd_h" = xyes
++then :
++  printf '%s\n' "#define HAVE_SYS_EVENTFD_H 1" >>confdefs.h
++
++fi
+ ac_fn_c_check_header_compile "$LINENO" "sys/extattr.h" "ac_cv_header_sys_extattr_h" "$ac_includes_default"
+ if test "x$ac_cv_header_sys_extattr_h" = xyes
+ then :
 --- a/configure.ac	2026-07-24 20:42:32.000000000 +0000
 +++ b/configure.ac	2026-08-03 01:16:48.829730904 +0000
 @@ -774,6 +774,7 @@

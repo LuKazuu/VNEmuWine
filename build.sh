@@ -21,6 +21,7 @@ TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS="
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 ac_cv_header_linux_userfaultfd_h=no
 ac_cv_header_linux_ntsync_h=no
+ac_cv_header_sys_eventfd_h=yes
 ac_cv_path_GRADLE=no
 enable_wineandroid_drv=no
 enable_tools=yes
