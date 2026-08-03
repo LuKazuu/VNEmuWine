@@ -7,7 +7,7 @@ index 485a137..314bba4 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -3788,7 +3788,7 @@ dnl Rules for generated source files
- 
+
  WINE_APPEND_RULE(
  [dlls/ntdll/unix/version.c: dummy
 -	@version=\`(GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
@@ -22,7 +22,7 @@ index 730a0cd..14b8bc7 100644
 @@ -1325,6 +1325,11 @@ static int setup_config_dir(void)
      struct stat st;
      int fd_cwd = open( ".", O_RDONLY );
- 
+
 +#ifdef _SC_PAGESIZE
 +    if (sysconf( _SC_PAGESIZE ) != 4096)
 +        MESSAGE("You are running with the wrong page size, expect problems!\nPlease also consult https://github.com/AndreRH/hangover/wiki/Page-Size\n");
@@ -43,24 +43,49 @@ index a2ea524..5a3ef00 100644
 +        if (is_wow64() && (!limit_high || limit_high > limit_4g)) limit_low = limit_4g;
 +#endif
      }
- 
+
      /* Compute the alloc type flags */
 diff --git a/server/mapping.c b/server/mapping.c
-index a53b6b6..2ee4831 100644
 --- a/server/mapping.c
 +++ b/server/mapping.c
 @@ -21,6 +21,7 @@
  #include "config.h"
- 
+
  #include <assert.h>
 +#include <errno.h>
  #include <fcntl.h>
  #include <stdarg.h>
  #include <stdio.h>
-@@ -272,11 +273,34 @@ static inline mem_size_t round_size( mem_size_t size, mem_size_t mask )
+@@ -211,11 +212,60 @@ static inline mem_size_t round_size( mem_size_t size, mem_size_t mask )
      return (size + mask) & ~mask;
  }
- 
+
++static void free_available_low_map_addr( client_ptr_t base, mem_size_t size )
++{
++    unsigned int flags = MAP_PRIVATE | MAP_ANON;
++
++#ifdef MAP_FIXED_NOREPLACE
++    flags |= MAP_FIXED_NOREPLACE;
++#endif
++
++    /* Only probe low 32-bit address ranges */
++    if (base >> 32) return;
++
++    {
++        void *ret = mmap( (void *)base, host_page_mask + 1, PROT_NONE, flags, -1, 0 );
++        if (ret != MAP_FAILED) munmap( ret, host_page_mask + 1 );
++        if ((ret != MAP_FAILED && ret >= (void *)base) || errno == EEXIST)
++        {
++            free_map_addr( base, size );
++            return;
++        }
++    }
++
++    /* Fallback: mark unconditionally (preserves old behavior on kernels
++     * without MAP_FIXED_NOREPLACE where the probe is just a hint) */
++    free_map_addr( base, size );
++}
++
 +static void free_available_high_map_addr( client_ptr_t base, mem_size_t size )
 +{
 +    unsigned int flags = MAP_PRIVATE | MAP_ANON;
@@ -92,5 +117,5 @@ index a53b6b6..2ee4831 100644
 +    free_map_addr( 0x4000000000, 0x1000000000 ); /* Android fix */
 +    free_available_high_map_addr( 0x600000000000, 0x100000000000 );
  }
- 
+
  static void ranges_dump( struct object *obj, int verbose )
