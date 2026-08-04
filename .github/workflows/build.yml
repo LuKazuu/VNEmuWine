@@ -59,7 +59,7 @@ jobs:
           cd External/zydis && git submodule update --init --depth 1 dependencies/zycore
 
       - name: Install deps
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake ninja-build python3 llvm
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake ninja-build python3
 
       - name: Download bylaws-llvm-mingw
         run: |
@@ -120,6 +120,11 @@ jobs:
 
       - name: Strip fexcore DLLs (matches wine build.sh behaviour)
         run: |
+          # Use bylaws-llvm-mingw's llvm-strip — guaranteed PE/ELF support.
+          # (System `apt install llvm` on Ubuntu 24.04 only ships llvm-strip-18,
+          # not the unversioned llvm-strip, so we can't rely on PATH alone.)
+          export PATH="/opt/bylaws-llvm-mingw/bin:$PATH"
+          command -v llvm-strip && llvm-strip --version | head -1
           echo "Stripping debug symbols from fexcore DLLs..."
           find fexcore-dlls -type f \( -name "*.dll" -o -name "*.exe" -o -name "*.so" -o -name "*.drv" -o -name "*.sys" \) -exec llvm-strip --strip-unneeded {} + 2>/dev/null || true
           echo "Stripping complete."
@@ -164,7 +169,7 @@ jobs:
         run: git clone --depth 1 --branch "${{ github.event.inputs.box64_ref || 'main' }}" https://github.com/ptitSeb/box64.git box64
 
       - name: Install deps
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake ninja-build python3 llvm
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake ninja-build python3
 
       - name: Download mstorsjo-llvm-mingw
         run: |
@@ -217,6 +222,11 @@ jobs:
 
       - name: Strip box64 DLL (matches wine build.sh behaviour)
         run: |
+          # Use mstorsjo-llvm-mingw's llvm-strip — guaranteed PE/ELF support.
+          # (System `apt install llvm` on Ubuntu 24.04 only ships llvm-strip-18,
+          # not the unversioned llvm-strip, so we can't rely on PATH alone.)
+          export PATH="/opt/mstorsjo-llvm-mingw/bin:$PATH"
+          command -v llvm-strip && llvm-strip --version | head -1
           echo "Stripping debug symbols from box64 DLL..."
           find box64-dlls -type f \( -name "*.dll" -o -name "*.exe" -o -name "*.so" -o -name "*.drv" -o -name "*.sys" \) -exec llvm-strip --strip-unneeded {} + 2>/dev/null || true
           echo "Stripping complete."
