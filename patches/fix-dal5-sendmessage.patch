@@ -1,0 +1,25 @@
+From: Wine Debugging Session
+Subject: [PATCH] imm32: Fix WM_IME_CONTROL stub to return 0 instead of 1.
+
+The WM_IME_CONTROL stub in ime_ui_window_proc returns 1 for all
+sub-commands, but IMC_CLOSESTATUSWINDOW should return 0 (matching
+Windows behavior when there is no status window to close).
+
+This fixes "SendMessage() error" in the DAL5 visual novel engine
+(e.g. Date A Live: Ren Dystopia) which checks the return value
+of SendMessage(WM_IME_CONTROL, IMC_CLOSESTATUSWINDOW) and expects 0.
+
+Backported from Proton's Wine fork.
+
+diff --git a/dlls/imm32/ime.c b/dlls/imm32/ime.c
+--- a/dlls/imm32/ime.c
++++ b/dlls/imm32/ime.c
+@@ -464,7 +464,7 @@
+     case WM_IME_CONTROL:
+         FIXME( "hwnd %p, himc %p, msg %s, wparam %s, lparam %#Ix stub!\n", hwnd, himc,
+                debugstr_wm_ime(msg), debugstr_imc(wparam), lparam );
+-        return 1;
++        return 0;
+     }
+ 
+     return DefWindowProcW( hwnd, msg, wparam, lparam );
