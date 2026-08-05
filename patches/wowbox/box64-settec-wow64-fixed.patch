@@ -1,35 +1,31 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 9eb7f3c..7132cbc 100644
+index 9eb7f3cec..45f440126 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1626,7 +1626,9 @@ if(WOW64 AND ARM_DYNAREC)
+@@ -1322,6 +1322,9 @@ endif()
+ add_custom_target(generate_git_head_target
+   DEPENDS "${BOX64_ROOT}/src/git_head.h"
+ )
++add_custom_target(generate_wow64_git_head_target
++  DEPENDS "${BOX64_ROOT}/src/git_head.h"
++)
+ add_custom_target(functions_list DEPENDS "${BOX64_ROOT}/src/wrapped/generated/functions_list.txt" "${BOX64_ROOT}/src/wrapped32/generated/functions_list.txt")
+ add_dependencies(generate_git_head_target functions_list)
+ 
+@@ -1626,7 +1629,7 @@ if(WOW64 AND ARM_DYNAREC)
          TEST_COMMAND ""
          BUILD_ALWAYS ON
      )
 -    add_dependencies(wowbox64 generate_git_head_target)
-+    # The WOW64 ExternalProject only consumes src/git_head.h through
-+    # src/build_info.c.  Do not force the Linux wrapper-generation targets
-+    # when cross-building wowbox64.dll from a Windows host.
++    add_dependencies(wowbox64 generate_wow64_git_head_target)
  endif()
  
  set(CPACK_GENERATOR "DEB")
-diff --git a/src/git_head.h b/src/git_head.h
-new file mode 100644
-index 0000000..e01ff17
---- /dev/null
-+++ b/src/git_head.h
-@@ -0,0 +1 @@
-+#define GITREV "fb5294a"
 diff --git a/src/os/emit_signal_wine.c b/src/os/emit_signal_wine.c
-index 6f8ee12..958142a 100644
+index 6f8ee1267..bbc61d195 100644
 --- a/src/os/emit_signal_wine.c
 +++ b/src/os/emit_signal_wine.c
-@@ -7,14 +7,22 @@
- 
- #include "x64_signals.h"
- #include "x64emu.h"
-+#include "emu/x64emu_private.h"
- #include "debug.h"
+@@ -11,10 +11,17 @@
  #include "custommem.h"
  #include "wine/compiler.h"
  
@@ -47,7 +43,7 @@ index 6f8ee12..958142a 100644
      switch (sig) {
          case X64_SIGILL:
              printf_log(LOG_DEBUG, "SIGILL at %p with code %d\n", addr, code);
-@@ -22,14 +30,26 @@ void EmitSignal(x64emu_t* emu, int sig, void* addr, int code)
+@@ -22,14 +29,19 @@ void EmitSignal(x64emu_t* emu, int sig, void* addr, int code)
              break;
          case X64_SIGSEGV:
              printf_log(LOG_DEBUG, "SIGSEGV at %p with code %d\n", addr, code);
@@ -56,13 +52,6 @@ index 6f8ee12..958142a 100644
 +               instructions (IN/OUT/HLT/etc.).  Windows exposes that trap to
 +               32-bit SEH as c0000096, not as an access violation. */
 +            rec.ExceptionCode = code == 0xbad0 ? EXCEPTION_PRIV_INSTRUCTION : STATUS_ACCESS_VIOLATION;
-+            if (code == 0xbad0) {
-+                const unsigned char* op = addr;
-+                printf_log(LOG_DEBUG,
-+                           "WOWBOX64_GP eip=%p esp=%08x bytes=%02x %02x %02x %02x %02x %02x %02x %02x\n",
-+                           addr, R_ESP, op[0], op[1], op[2], op[3],
-+                           op[4], op[5], op[6], op[7]);
-+            }
              break;
          default:
              printf_log(LOG_INFO, "Warning, unknown signal %d at %p with code %d\n", sig, addr, code);
@@ -77,7 +66,7 @@ index 6f8ee12..958142a 100644
      rec.ExceptionAddress = addr;
      rec.NumberParameters = 0;
 diff --git a/src/os/os_wine.c b/src/os/os_wine.c
-index c4cf813..675738a 100644
+index c4cf813b8..675738a86 100644
 --- a/src/os/os_wine.c
 +++ b/src/os/os_wine.c
 @@ -6,6 +6,7 @@
@@ -118,7 +107,7 @@ index c4cf813..675738a 100644
 \ No newline at end of file
 +}
 diff --git a/wine/wow64/wowbox64.c b/wine/wow64/wowbox64.c
-index b121274..4ef5031 100644
+index b1212743f..f1ce7e714 100644
 --- a/wine/wow64/wowbox64.c
 +++ b/wine/wow64/wowbox64.c
 @@ -111,6 +111,8 @@ cpu_ext_t cpuext = {0};
@@ -173,24 +162,20 @@ index b121274..4ef5031 100644
  static NTSTATUS invalidate_mapped_section(PVOID addr)
  {
      MEMORY_BASIC_INFORMATION mem_info;
-@@ -209,27 +247,110 @@ void WINAPI BTCpuNotifyMemoryDirty(PVOID addr, SIZE_T size)
+@@ -209,27 +247,100 @@ void WINAPI BTCpuNotifyMemoryDirty(PVOID addr, SIZE_T size)
      unprotectDB((uintptr_t)addr, (size_t)size, 1);
  }
  
 -void WINAPI BTCpuNotifyMemoryFree(PVOID addr, SIZE_T size, ULONG free_type)
 +void WINAPI BTCpuNotifyMemoryAlloc(PVOID addr, SIZE_T size, ULONG alloc_type, ULONG protect, BOOL after, ULONG status)
- {
--    printf_log(LOG_DEBUG, "BTCpuNotifyMemoryFree(%p, %zu, %u)\n", addr, size, free_type);
-+    printf_log(LOG_DEBUG, "BTCpuNotifyMemoryAlloc(%p, %zu, %u, %08x, %u, %08x)\n",
-+               addr, size, alloc_type, protect, after, status);
++{
 +    if (after && NT_SUCCESS((NTSTATUS)status) && !(alloc_type & (MEM_RESET | MEM_RESET_UNDO)))
 +        unprotectDB((uintptr_t)addr, (size_t)size, 1);
 +}
 +
 +void WINAPI BTCpuNotifyMemoryFree(PVOID addr, SIZE_T size, ULONG free_type, BOOL after, ULONG status)
-+{
-+    printf_log(LOG_DEBUG, "BTCpuNotifyMemoryFree(%p, %zu, %u, %u, %08x)\n",
-+               addr, size, free_type, after, status);
+ {
+     printf_log(LOG_DEBUG, "BTCpuNotifyMemoryFree(%p, %zu, %u)\n", addr, size, free_type);
 +    /* Wine calls this both before and after NtFreeVirtualMemory.  Invalidate
 +       while the mapping still exists; doing it again after release would make
 +       invalidate_mapped_section() unable to discover its original extent. */
@@ -205,10 +190,8 @@ index b121274..4ef5031 100644
 -void WINAPI BTCpuNotifyMemoryProtect(PVOID addr, SIZE_T size, DWORD new_protect)
 +void WINAPI BTCpuNotifyMemoryProtect(PVOID addr, SIZE_T size, DWORD new_protect, BOOL after, ULONG status)
  {
--    printf_log(LOG_DEBUG, "BTCpuNotifyMemoryProtect(%p, %zu, %08x)\n", addr, size, new_protect);
+     printf_log(LOG_DEBUG, "BTCpuNotifyMemoryProtect(%p, %zu, %08x)\n", addr, size, new_protect);
 -    if (!(new_protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
-+    printf_log(LOG_DEBUG, "BTCpuNotifyMemoryProtect(%p, %zu, %08x, %u, %08x)\n",
-+               addr, size, new_protect, after, status);
 +    if (!after || !NT_SUCCESS((NTSTATUS)status) ||
 +        !(new_protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
          return;
@@ -221,8 +204,6 @@ index b121274..4ef5031 100644
  {
 -    printf_log(LOG_DEBUG, "BTCpuNotifyUnmapViewOfSection(%p, %u)\n", addr, flags);
 -    invalidate_mapped_section(addr);
-+    printf_log(LOG_DEBUG, "BTCpuNotifyMapViewOfSection(%p, %p, %p, %zu, %u, %08x)\n",
-+               unknown1, addr, unknown2, size, alloc_type, protect);
 +    if (addr && size)
 +        unprotectDB((uintptr_t)addr, (size_t)size, 1);
 +    return STATUS_SUCCESS;
@@ -230,15 +211,12 @@ index b121274..4ef5031 100644
 +
 +void WINAPI BTCpuNotifyUnmapViewOfSection(PVOID addr, BOOL after, ULONG status)
 +{
-+    printf_log(LOG_DEBUG, "BTCpuNotifyUnmapViewOfSection(%p, %u, %08x)\n", addr, after, status);
 +    if (!after)
 +        invalidate_mapped_section(addr);
 +}
 +
 +void WINAPI BTCpuNotifyReadFile(HANDLE handle, PVOID addr, SIZE_T size, BOOL after, NTSTATUS status)
 +{
-+    printf_log(LOG_DEBUG, "BTCpuNotifyReadFile(%p, %p, %zu, %u, %08x)\n",
-+               handle, addr, size, after, status);
 +    /* Invalidate before the kernel writes into a possibly translated page. */
 +    if (!after && addr && size)
 +        unprotectDB((uintptr_t)addr, (size_t)size, 1);
@@ -246,7 +224,6 @@ index b121274..4ef5031 100644
 +
 +void WINAPI BTCpuNotifyProcessExecuteFlagsChange(ULONG flags)
 +{
-+    printf_log(LOG_DEBUG, "BTCpuNotifyProcessExecuteFlagsChange(%08x)\n", flags);
 +}
 +
 +BOOLEAN WINAPI BTCpuIsProcessorFeaturePresent(UINT feature)
@@ -292,7 +269,7 @@ index b121274..4ef5031 100644
  }
  
  NTSTATUS WINAPI BTCpuProcessInit(void)
-@@ -311,6 +432,28 @@ NTSTATUS WINAPI BTCpuResetToConsistentState(EXCEPTION_POINTERS* ptrs)
+@@ -311,6 +422,23 @@ NTSTATUS WINAPI BTCpuResetToConsistentState(EXCEPTION_POINTERS* ptrs)
      EXCEPTION_RECORD* rec = ptrs->ExceptionRecord;
      CONTEXT* ctx = ptrs->ContextRecord;
  
@@ -306,11 +283,6 @@ index b121274..4ef5031 100644
 +        ctx->Pc >= (ULONG_PTR)wowbox64_module &&
 +        ctx->Pc < (ULONG_PTR)wowbox64_module + wowbox64_image_size) {
 +        CONTEXT* entry = NtCurrentTeb()->TlsSlots[WOW64_TLS_ENTRY_CONTEXT];
-+        printf_log(LOG_DEBUG,
-+                   "WOWBOX64_HOSTFAULT host_pc=%p guest_eip=%08x guest_esp=%08x access=%llu addr=%p\n",
-+                   (void*)ctx->Pc, (unsigned int)R_RIP, (unsigned int)R_ESP,
-+                   rec->NumberParameters ? (unsigned long long)rec->ExceptionInformation[0] : 0,
-+                   rec->NumberParameters > 1 ? (void*)rec->ExceptionInformation[1] : NULL);
 +        WowBox64StoreContext(emu);
 +        rec->ExceptionAddress = ULongToPtr(R_RIP);
 +        if (entry)
@@ -321,15 +293,14 @@ index b121274..4ef5031 100644
      if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
          dynablock_t* db = NULL;
          void* addr = NULL;
-@@ -339,16 +482,14 @@ NTSTATUS WINAPI BTCpuSetContext(HANDLE thread, HANDLE process, void* unknown, WO
+@@ -339,16 +467,14 @@ NTSTATUS WINAPI BTCpuSetContext(HANDLE thread, HANDLE process, void* unknown, WO
      return NtSetInformationThread(thread, ThreadWow64Context, ctx, sizeof(*ctx));
  }
  
 -void WINAPI BTCpuSimulate(void)
 +void BTCpuSimulateImpl(CONTEXT* entry_context)
  {
--    printf_log(LOG_DEBUG, "BTCpuSimulate()\n");
-+    printf_log(LOG_DEBUG, "BTCpuSimulateImpl(%p)\n", entry_context);
+     printf_log(LOG_DEBUG, "BTCpuSimulate()\n");
      WOW64_CPURESERVED* cpu = NtCurrentTeb()->TlsSlots[WOW64_TLS_CPURESERVED];
      x64emu_t* emu = NtCurrentTeb()->TlsSlots[WOW64_TLS_EMU];
      WOW64_CONTEXT* ctx = (WOW64_CONTEXT*)(cpu + 1);
@@ -341,7 +312,7 @@ index b121274..4ef5031 100644
  
      R_EAX = ctx->Eax;
      R_EBX = ctx->Ebx;
-@@ -377,6 +518,32 @@ void WINAPI BTCpuSimulate(void)
+@@ -377,6 +503,32 @@ void WINAPI BTCpuSimulate(void)
          Run(emu, 0);
  }
  
@@ -374,18 +345,16 @@ index b121274..4ef5031 100644
  NTSTATUS WINAPI BTCpuThreadInit(void)
  {
      printf_log(LOG_DEBUG, "BTCpuThreadInit()\n");
-@@ -398,6 +565,25 @@ NTSTATUS WINAPI BTCpuThreadInit(void)
+@@ -398,6 +550,22 @@ NTSTATUS WINAPI BTCpuThreadInit(void)
      return STATUS_SUCCESS;
  }
  
 +void WINAPI BTCpuProcessTerm(HANDLE process, BOOL after, ULONG status)
 +{
-+    printf_log(LOG_DEBUG, "BTCpuProcessTerm(%p, %u, %08x)\n", process, after, status);
 +}
 +
 +void WINAPI BTCpuThreadTerm(HANDLE thread, LONG exit_code)
 +{
-+    printf_log(LOG_DEBUG, "BTCpuThreadTerm(%p, %ld)\n", thread, exit_code);
 +    /* The per-thread emulator state belongs to the terminating thread.  Wine
 +       can notify us from another thread, so leave reclamation to process exit
 +       rather than risk freeing live TLS state. */
@@ -393,14 +362,13 @@ index b121274..4ef5031 100644
 +
 +NTSTATUS WINAPI BTCpuSuspendLocalThread(HANDLE thread, ULONG* count)
 +{
-+    printf_log(LOG_DEBUG, "BTCpuSuspendLocalThread(%p, %p)\n", thread, count);
 +    return STATUS_NOT_SUPPORTED;
 +}
 +
  void EmitInterruptionImpl(x64emu_t* emu, int code)
  {
      if (code == 0x2e /* NT syscall */) {
-@@ -428,9 +614,10 @@ void EmitInterruptionImpl(x64emu_t* emu, int code)
+@@ -428,9 +596,10 @@ void EmitInterruptionImpl(x64emu_t* emu, int code)
              uintptr_t handle_high = Pop32(emu);
              unsigned int code = Pop32(emu);
              uintptr_t args = Pop32(emu);
@@ -412,7 +380,7 @@ index b121274..4ef5031 100644
          } else {
              R_EAX = Wow64SystemServiceEx(id, ULongToPtr(ctx->Esp + 4));
          }
-@@ -445,15 +632,41 @@ void EmitInterruptionImpl(x64emu_t* emu, int code)
+@@ -445,15 +614,38 @@ void EmitInterruptionImpl(x64emu_t* emu, int code)
          R_RIP = ctx->Eip;
          if (cpu->Flags & WOW64_CPURESERVED_FLAG_RESET_STATE) {
              cpu->Flags &= ~WOW64_CPURESERVED_FLAG_RESET_STATE;
@@ -436,9 +404,6 @@ index b121274..4ef5031 100644
      } else {
 -        RtlRaiseStatus(STATUS_ACCESS_VIOLATION);
 +        EXCEPTION_RECORD rec = {0};
-+        printf_log(LOG_DEBUG, "WOWBOX64_INTERRUPT code=%02x eip=%08x esp=%08x\n",
-+                   code, (unsigned int)R_RIP, (unsigned int)R_ESP);
-+
 +        /* A software INT executed from ring 3 normally arrives at Wine as an
 +           x86 #GP whose error code identifies the requested interrupt.  The
 +           Linux Box64 path synthesizes that trap metadata, but the PE/WOW64
@@ -456,7 +421,7 @@ index b121274..4ef5031 100644
      }
  }
  
-@@ -483,6 +696,12 @@ NTSTATUS WINAPI LdrDisableThreadCalloutsForDll(HMODULE);
+@@ -483,6 +675,12 @@ NTSTATUS WINAPI LdrDisableThreadCalloutsForDll(HMODULE);
  
  BOOL WINAPI DllMainCRTStartup(HINSTANCE inst, DWORD reason, void* reserved)
  {
@@ -471,7 +436,7 @@ index b121274..4ef5031 100644
      return TRUE;
  }
 diff --git a/wine/wow64/wowbox64.def b/wine/wow64/wowbox64.def
-index dd1d0dc..476f1a2 100644
+index dd1d0dc2a..476f1a2b1 100644
 --- a/wine/wow64/wowbox64.def
 +++ b/wine/wow64/wowbox64.def
 @@ -5,13 +5,22 @@ EXPORTS
