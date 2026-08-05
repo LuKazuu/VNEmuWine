@@ -1,0 +1,36 @@
+From: Wine Debugging Session
+Subject: [PATCH] user32: Remove NtUserSetWindowFNID from DefDlgProc to fix WM_CTLCOLORDLG
+
+When NtUserSetWindowFNID marks a dialog window at the kernel level,
+WM_CTLCOLORDLG gets handled by the kernel-side handle_control_color()
+in win32u/defwnd.c. The returned HBRUSH handle can get corrupted
+during WoW64 handle translation, causing applications (e.g. DAL5 VN
+engine) to receive an invalid value and report "SendMessage() error".
+
+Removing the FNID assignment keeps dialog message dispatch entirely
+in user mode, matching Proton's behavior and fixing the issue.
+
+Fixes: WM_CTLCOLORDLG (0x0136) returns garbage (0x0110005e) instead
+of a valid HBRUSH when sent to a dialog window under WoW64.
+
+diff --git a/dlls/user32/defdlg.c b/dlls/user32/defdlg.c
+--- a/dlls/user32/defdlg.c
++++ b/dlls/user32/defdlg.c
+@@ -316,8 +316,6 @@
+     DIALOGINFO *dlgInfo;
+     LRESULT result;
+ 
+-    NtUserSetWindowFNID( hwnd, MAKE_FNID(NTUSER_WNDPROC_DIALOG) );
+-
+     /* Perform DIALOGINFO initialization if not done */
+     if(!(dlgInfo = DIALOG_get_info( hwnd, TRUE ))) return 0;
+ 
+@@ -370,8 +368,6 @@
+     DIALOGINFO *dlgInfo;
+     LRESULT result;
+ 
+-    NtUserSetWindowFNID( hwnd, MAKE_FNID(NTUSER_WNDPROC_DIALOG) );
+-
+     /* Perform DIALOGINFO initialization if not done */
+     if(!(dlgInfo = DIALOG_get_info( hwnd, TRUE ))) return 0;
+ 
