@@ -118,17 +118,9 @@ jobs:
           cp fex/build_pe/Bin/libwow64fex.dll fexcore-dlls/
           ls -lh fexcore-dlls/
 
-      - name: Strip fexcore DLLs (matches wine build.sh behaviour)
-        run: |
-          # Use bylaws-llvm-mingw's llvm-strip — guaranteed PE/ELF support.
-          # (System `apt install llvm` on Ubuntu 24.04 only ships llvm-strip-18,
-          # not the unversioned llvm-strip, so we can't rely on PATH alone.)
-          export PATH="/opt/bylaws-llvm-mingw/bin:$PATH"
-          command -v llvm-strip && llvm-strip --version | head -1
-          echo "Stripping debug symbols from fexcore DLLs..."
-          find fexcore-dlls -type f \( -name "*.dll" -o -name "*.exe" -o -name "*.so" -o -name "*.drv" -o -name "*.sys" \) -exec llvm-strip --strip-unneeded {} + 2>/dev/null || true
-          echo "Stripping complete."
-          ls -lh fexcore-dlls/
+      # NOTE: The "Strip fexcore DLLs" step that used to live here has been
+      # REMOVED so the FEX binaries retain their debug info, matching the
+      # no-strip policy of the rest of the debug-friendly build.
 
       - name: Upload fexcore DLLs (artifact)
         uses: actions/upload-artifact@v4
@@ -220,17 +212,9 @@ jobs:
           find box64/build_pe -name "wowbox64.dll" -exec cp {} box64-dlls/ \;
           ls -lh box64-dlls/
 
-      - name: Strip box64 DLL (matches wine build.sh behaviour)
-        run: |
-          # Use mstorsjo-llvm-mingw's llvm-strip — guaranteed PE/ELF support.
-          # (System `apt install llvm` on Ubuntu 24.04 only ships llvm-strip-18,
-          # not the unversioned llvm-strip, so we can't rely on PATH alone.)
-          export PATH="/opt/mstorsjo-llvm-mingw/bin:$PATH"
-          command -v llvm-strip && llvm-strip --version | head -1
-          echo "Stripping debug symbols from box64 DLL..."
-          find box64-dlls -type f \( -name "*.dll" -o -name "*.exe" -o -name "*.so" -o -name "*.drv" -o -name "*.sys" \) -exec llvm-strip --strip-unneeded {} + 2>/dev/null || true
-          echo "Stripping complete."
-          ls -lh box64-dlls/
+      # NOTE: The "Strip box64 DLL" step that used to live here has been REMOVED
+      # so the box64 binary retains its symbol table, matching the no-strip
+      # policy of the rest of the debug-friendly build.
 
       - name: Upload box64 DLL (artifact)
         uses: actions/upload-artifact@v4
@@ -351,13 +335,51 @@ jobs:
       - name: Free disk space
         run: cd termux-packages && export CI=true && ./scripts/free-space.sh && df -h
 
-      - name: Build
+      # ------------------------------------------------------------------------
+      # ccache: persist compiled objects across CI runs.
+      # The cache lives INSIDE the termux-packages dir because that's the only
+      # path the Docker container shares with the host runner. The build.sh's
+      # `_setup_ccache` function auto-detects CI mode and picks this path.
+      # ------------------------------------------------------------------------
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: termux-packages/.ccache
+          key: ccache-aarch64-wine-${{ steps.ver.outputs.wine_version }}-${{ hashFiles('patches/**/*.patch', 'patches/*.patch', 'patches/*.patch.beforehostbuild', 'build.sh') }}
+          restore-keys: |
+            ccache-aarch64-wine-${{ steps.ver.outputs.wine_version }}-
+            ccache-aarch64-wine-
+            ccache-aarch64-
+
+      - name: Build ccache-enabled builder image
         run: |
-          cd termux-packages
           sudo systemctl start docker || true
           sudo docker pull ghcr.io/termux/package-builder:latest
-          sudo ./scripts/run-docker.sh ./build-package.sh -a aarch64 -I x11-packages/hangover-wine 2>&1 | tee build.log || {
+          # Tiny layer on top of the upstream image — only adds ccache.
+          cat > /tmp/Dockerfile.ccache <<'EOF'
+          FROM ghcr.io/termux/package-builder:latest
+          USER root
+          RUN apt-get update -qq && apt-get install -y --no-install-recommends ccache && rm -rf /var/lib/apt/lists/*
+          USER builder
+          EOF
+          sudo docker build -f /tmp/Dockerfile.ccache -t package-builder-ccache:latest /tmp
+          sudo docker images | grep package-builder
+
+      - name: Build
+        env:
+          TERMUX_DOCKER_IMAGE: package-builder-ccache:latest
+        run: |
+          cd termux-packages
+          mkdir -p .ccache
+          sudo -E ./scripts/run-docker.sh ./build-package.sh -a aarch64 -I x11-packages/hangover-wine 2>&1 | tee build.log || {
             tail -200 build.log; exit 1; }
+
+      - name: ccache stats
+        run: |
+          if [ -d termux-packages/.ccache ]; then
+            sudo cat termux-packages/.ccache/ccache.conf 2>/dev/null || true
+            du -sh termux-packages/.ccache 2>/dev/null || true
+          fi
 
       - name: Collect
         run: mkdir -p artifacts && find termux-packages -name "*.deb" -type f -exec cp {} artifacts/ \; && ls -la artifacts/
