@@ -1,7 +1,6 @@
-diff -uNr a/dlls/crypt32/unixlib.c b/dlls/crypt32/unixlib.c
 --- a/dlls/crypt32/unixlib.c
 +++ b/dlls/crypt32/unixlib.c
-@@ -619,6 +619,7 @@
+@@ -921,6 +921,7 @@
   "/usr/local/share/certs/",
   "/etc/sfw/openssl/certs",
   "/etc/security/cacerts",  /* Android */
@@ -9,10 +8,9 @@ diff -uNr a/dlls/crypt32/unixlib.c b/dlls/crypt32/unixlib.c
  };
  
  static void load_root_certs(void)
-diff -uNr a/dlls/dbghelp/macho_module.c b/dlls/dbghelp/macho_module.c
 --- a/dlls/dbghelp/macho_module.c
 +++ b/dlls/dbghelp/macho_module.c
-@@ -1578,7 +1578,7 @@
+@@ -1631,7 +1631,7 @@
      {
          const WCHAR* fallback = process_getenv(pcs, L"DYLD_FALLBACK_LIBRARY_PATH");
          if (!fallback)
@@ -21,10 +19,9 @@ diff -uNr a/dlls/dbghelp/macho_module.c b/dlls/dbghelp/macho_module.c
          ret = search_unix_path(p, fallback, macho_load_file_cb, &load_params);
      }
      if (!ret && p == filename)
-diff -uNr a/dlls/dbghelp/module.c b/dlls/dbghelp/module.c
 --- a/dlls/dbghelp/module.c
 +++ b/dlls/dbghelp/module.c
-@@ -709,9 +709,9 @@
+@@ -651,9 +651,9 @@
  
      if (!(fmap_link = HeapAlloc(GetProcessHeap(), 0, sizeof(*fmap_link))))
          return NULL;
@@ -36,7 +33,7 @@ diff -uNr a/dlls/dbghelp/module.c b/dlls/dbghelp/module.c
          return fmap_link;
  
      sz = GetEnvironmentVariableW(L"WINEHOMEDIR", NULL, 0);
-@@ -778,7 +778,7 @@
+@@ -739,7 +739,7 @@
                  if (!ret)
                  {
                      dst = HeapAlloc(GetProcessHeap(), 0,
@@ -45,7 +42,7 @@ diff -uNr a/dlls/dbghelp/module.c b/dlls/dbghelp/module.c
                      if (dst)
                      {
                          WCHAR* p;
-@@ -788,7 +788,7 @@
+@@ -749,7 +749,7 @@
                           * where the alternate file is...
                           * so try both
                           */
@@ -54,10 +51,9 @@ diff -uNr a/dlls/dbghelp/module.c b/dlls/dbghelp/module.c
                          p += wcslen(dst);
                          MultiByteToWideChar(CP_UNIXCP, 0, data, -1, p, filename_len);
                          ret = image_check_debug_link_gnu_id(dst, fmap_link, id, idlen);
-diff -uNr a/dlls/msvcrt/tests/environ.c b/dlls/msvcrt/tests/environ.c
 --- a/dlls/msvcrt/tests/environ.c
 +++ b/dlls/msvcrt/tests/environ.c
-@@ -41,7 +41,8 @@
+@@ -43,7 +43,8 @@
   "/lib/mingw32/3.4.2/;"
   "/lib/;"
   "/usr/lib/mingw32/3.4.2/;"
@@ -67,10 +63,9 @@ diff -uNr a/dlls/msvcrt/tests/environ.c b/dlls/msvcrt/tests/environ.c
  
  static char ***(__cdecl *p__p__environ)(void);
  static WCHAR ***(__cdecl *p__p__wenviron)(void);
-diff -uNr a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
-@@ -1233,10 +1233,10 @@
+@@ -1305,10 +1305,10 @@
  {
      char *dir = NULL;
  
@@ -83,7 +78,7 @@ diff -uNr a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
  #endif
      return dir;
  }
-@@ -1332,6 +1332,7 @@
+@@ -1351,6 +1351,7 @@
      {
          mkdir( "drive_c", 0777 );
          symlink( "../drive_c", "dosdevices/c:" );
@@ -91,10 +86,9 @@ diff -uNr a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
          symlink( "/", "dosdevices/z:" );
      }
      else if (errno != EEXIST) fatal_perror( "cannot create %s/dosdevices", config_dir );
-diff -uNr a/programs/winebrowser/main.c b/programs/winebrowser/main.c
 --- a/programs/winebrowser/main.c
 +++ b/programs/winebrowser/main.c
-@@ -116,6 +116,7 @@
+@@ -115,6 +115,7 @@
  {
      static const WCHAR defaultbrowsers[] =
          L"xdg-open\0"
@@ -102,7 +96,7 @@ diff -uNr a/programs/winebrowser/main.c b/programs/winebrowser/main.c
          "/usr/bin/open\0"
          "firefox\0"
          "konqueror\0"
-@@ -141,7 +142,8 @@
+@@ -140,7 +141,8 @@
  static int open_mailto_url( const WCHAR *url )
  {
      static const WCHAR defaultmailers[] =
@@ -112,7 +106,6 @@ diff -uNr a/programs/winebrowser/main.c b/programs/winebrowser/main.c
          "xdg-email\0"
          "mozilla-thunderbird\0"
          "thunderbird\0"
-diff -uNr a/programs/winemenubuilder/winemenubuilder.c b/programs/winemenubuilder/winemenubuilder.c
 --- a/programs/winemenubuilder/winemenubuilder.c
 +++ b/programs/winemenubuilder/winemenubuilder.c
 @@ -1709,7 +1709,7 @@
@@ -124,10 +117,9 @@ diff -uNr a/programs/winemenubuilder/winemenubuilder.c b/programs/winemenubuilde
  
      ret = add_mimes(xdg_data_dir, mime_types);
      if (ret)
-diff -uNr a/server/request.c b/server/request.c
 --- a/server/request.c
 +++ b/server/request.c
-@@ -647,12 +647,12 @@
+@@ -617,11 +617,11 @@
  
      /* create the base directory if needed */
  
@@ -141,4 +133,3 @@ diff -uNr a/server/request.c b/server/request.c
          fatal_error( "out of memory\n" );
  #endif
      create_dir( base_dir, &st2 );
- 

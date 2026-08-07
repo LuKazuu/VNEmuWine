@@ -1,10 +1,8 @@
-diff --git a/dlls/mfplat/main.c b/dlls/mfplat/main.c
-index 6763ee8..2d578d7 100644
 --- a/dlls/mfplat/main.c
 +++ b/dlls/mfplat/main.c
-@@ -9288,6 +9288,15 @@ HRESULT WINAPI MFCreateDXGIDeviceManager(UINT *token, IMFDXGIDeviceManager **man
- 
-     TRACE("%p, %p.\n", token, manager);
+@@ -9690,6 +9690,15 @@
+     if (!token || !manager)
+         return E_POINTER;
  
 +    {
 +        const char *do_not_create = getenv("WINE_DO_NOT_CREATE_DXGI_DEVICE_MANAGER");
@@ -15,6 +13,5 @@ index 6763ee8..2d578d7 100644
 +        }
 +    }
 +
-     if (!token || !manager)
-         return E_POINTER;
- 
+     if (!(object = calloc(1, sizeof(*object))))
+         return E_OUTOFMEMORY;

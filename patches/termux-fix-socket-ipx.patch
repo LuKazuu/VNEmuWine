@@ -11,7 +11,7 @@
  #endif
 --- a/dlls/ws2_32/unixlib.c
 +++ b/dlls/ws2_32/unixlib.c
-@@ -68,7 +68,7 @@
+@@ -75,7 +75,7 @@
  #  include <linux/types.h>
  # endif
  # include <linux/ipx.h>
@@ -22,7 +22,7 @@
  #endif
 --- a/server/sock.c
 +++ b/server/sock.c
-@@ -71,7 +71,7 @@
+@@ -74,7 +74,7 @@
  #  include <linux/types.h>
  # endif
  # include <linux/ipx.h>

@@ -1,12 +1,6 @@
-From: AndreRH
-Subject: [PATCH] hangover: wow64 FEX integration
-
----
-diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
-index b19bf78..7a2b69f 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
-@@ -4255,17 +4255,50 @@ static void open_known_dll_ntdir(void)
+@@ -4272,17 +4272,50 @@
  
  #ifdef __arm64ec__
  
@@ -59,7 +53,7 @@ index b19bf78..7a2b69f 100644
      InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, 0, NULL );
      if (!NtOpenKey( &key, KEY_READ | KEY_WOW64_64KEY, &attr ))
      {
-@@ -4280,6 +4313,7 @@ static void load_arm64ec_module(void)
+@@ -4297,6 +4330,7 @@
          }
          NtClose( key );
      }
@@ -67,7 +61,7 @@ index b19bf78..7a2b69f 100644
  
      if ((status = load_dll( NULL, module, 0, &wm, FALSE )) ||
          (status = arm64ec_process_init( wm->ldr.DllBase )))
-@@ -4310,6 +4344,7 @@ static void build_wow64_main_module(void)
+@@ -4327,6 +4361,7 @@
  static void (WINAPI *pWow64LdrpInitialize)( CONTEXT *ctx );
  
  void (WINAPI *pWow64PrepareForException)( EXCEPTION_RECORD *rec, CONTEXT *context ) = NULL;
@@ -75,7 +69,7 @@ index b19bf78..7a2b69f 100644
  
  static void init_wow64( CONTEXT *context )
  {
-@@ -4334,6 +4369,7 @@ static void init_wow64( CONTEXT *context )
+@@ -4351,6 +4386,7 @@
  
          GET_PTR( Wow64LdrpInitialize );
          GET_PTR( Wow64PrepareForException );
@@ -83,11 +77,9 @@ index b19bf78..7a2b69f 100644
  #undef GET_PTR
          imports_fixup_done = TRUE;
      }
-diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
-index f396c33..b00ab05 100644
 --- a/dlls/ntdll/ntdll.spec
 +++ b/dlls/ntdll/ntdll.spec
-@@ -1144,6 +1144,7 @@
+@@ -1150,6 +1150,7 @@
  @ stdcall -arch=win64 RtlWow64PushCrossProcessWorkOntoWorkList(ptr ptr ptr)
  @ stdcall -arch=win64 RtlWow64RequestCrossProcessHeavyFlush(ptr)
  @ stdcall -arch=win64 RtlWow64SetThreadContext(long ptr)
@@ -95,11 +87,9 @@ index f396c33..b00ab05 100644
  @ stub RtlWriteMemoryStream
  @ stdcall RtlWriteRegistryValue(long ptr wstr long ptr long)
  @ stub RtlZeroHeap
-diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
-index 1ac221b..88fbe13 100644
 --- a/dlls/ntdll/ntdll_misc.h
 +++ b/dlls/ntdll/ntdll_misc.h
-@@ -74,6 +74,7 @@ extern void WINAPI KiUserApcDispatcher(CONTEXT*,ULONG_PTR,ULONG_PTR,ULONG_PTR,PN
+@@ -74,6 +74,7 @@
  extern void WINAPI KiUserCallbackDispatcher(ULONG,void*,ULONG);
  extern void WINAPI KiUserCallbackDispatcherReturn(void);
  extern void (WINAPI *pWow64PrepareForException)( EXCEPTION_RECORD *rec, CONTEXT *context );
@@ -107,11 +97,9 @@ index 1ac221b..88fbe13 100644
  
  /* debug helpers */
  extern LPCSTR debugstr_us( const UNICODE_STRING *str );
-diff --git a/dlls/ntdll/signal_arm64.c b/dlls/ntdll/signal_arm64.c
-index 056f875..2b738bf 100644
 --- a/dlls/ntdll/signal_arm64.c
 +++ b/dlls/ntdll/signal_arm64.c
-@@ -672,6 +672,73 @@ BOOLEAN WINAPI RtlIsProcessorFeaturePresent( UINT feature )
+@@ -673,6 +673,73 @@
      return !!(cpu_features_bitmap[feature / 64] & (1ull << (feature % 64)));
  }
  
@@ -185,11 +173,9 @@ index 056f875..2b738bf 100644
  
  /*************************************************************************
   *		RtlWalkFrameChain (NTDLL.@)
-diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
-index b6a9aa5..4c1b4ec 100644
 --- a/dlls/ntdll/signal_arm64ec.c
 +++ b/dlls/ntdll/signal_arm64ec.c
-@@ -1809,6 +1809,13 @@ BOOLEAN WINAPI RtlIsProcessorFeaturePresent( UINT feature )
+@@ -1827,6 +1827,13 @@
      return emulated_processor_features[feature];
  }
  
@@ -203,11 +189,9 @@ index b6a9aa5..4c1b4ec 100644
  
  /*************************************************************************
   *		RtlWalkFrameChain (NTDLL.@)
-diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
-index 29fadc7..0ed76d3 100644
 --- a/dlls/ntdll/signal_x86_64.c
 +++ b/dlls/ntdll/signal_x86_64.c
-@@ -865,6 +865,13 @@ BOOLEAN WINAPI RtlIsProcessorFeaturePresent( UINT feature )
+@@ -866,6 +866,13 @@
      return feature < PROCESSOR_FEATURE_MAX && user_shared_data->ProcessorFeatures[feature];
  }
  
@@ -221,11 +205,9 @@ index 29fadc7..0ed76d3 100644
  
  /*************************************************************************
   *		RtlWalkFrameChain (NTDLL.@)
-diff --git a/dlls/wow64/process.c b/dlls/wow64/process.c
-index 625b0ea..3ab94cb 100644
 --- a/dlls/wow64/process.c
 +++ b/dlls/wow64/process.c
-@@ -1115,10 +1115,9 @@ NTSTATUS WINAPI wow64_NtSuspendThread( UINT *args )
+@@ -1134,10 +1134,9 @@
      HANDLE handle = get_handle( &args );
      ULONG *count = get_ptr( &args );
  
@@ -237,11 +219,9 @@ index 625b0ea..3ab94cb 100644
  /**********************************************************************
   *           wow64_NtTerminateProcess
   */
-diff --git a/dlls/wow64/syscall.c b/dlls/wow64/syscall.c
-index 9fdef4a..19c4f84 100644
 --- a/dlls/wow64/syscall.c
 +++ b/dlls/wow64/syscall.c
-@@ -102,6 +102,7 @@ static void     (WINAPI *pBTCpuProcessInit)(void);
+@@ -102,6 +102,7 @@
  static NTSTATUS (WINAPI *pBTCpuSetContext)(HANDLE,HANDLE,void *,void *);
  static void     (WINAPI *pBTCpuThreadInit)(void);
  static void     (WINAPI *pBTCpuSimulate)(void) __attribute__((used));
@@ -249,7 +229,7 @@ index 9fdef4a..19c4f84 100644
  static void *   (WINAPI *p__wine_get_unix_opcode)(void);
  static void *   (WINAPI *pKiRaiseUserExceptionDispatcher)(void);
  void     (WINAPI *pBTCpuFlushInstructionCache2)( const void *, SIZE_T ) = NULL;
-@@ -734,6 +735,25 @@ static HMODULE load_64bit_module( const WCHAR *name )
+@@ -902,6 +903,25 @@
      return module;
  }
  
@@ -275,7 +255,7 @@ index 9fdef4a..19c4f84 100644
  
  /**********************************************************************
   *           get_cpu_dll_name
-@@ -742,18 +762,24 @@ static const WCHAR *get_cpu_dll_name(void)
+@@ -910,18 +930,24 @@
  {
      static ULONG buffer[32];
      KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
@@ -303,7 +283,7 @@ index 9fdef4a..19c4f84 100644
      case IMAGE_FILE_MACHINE_ARMNT:
          RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\arm" );
          ret = L"wowarmhw.dll";
-@@ -847,6 +873,7 @@ static DWORD WINAPI process_init( RTL_RUN_ONCE *once, void *param, void **contex
+@@ -1015,6 +1041,7 @@
      GET_PTR( BTCpuProcessInit );
      GET_PTR( BTCpuThreadInit );
      GET_PTR( BTCpuResetToConsistentState );
@@ -311,7 +291,7 @@ index 9fdef4a..19c4f84 100644
      GET_PTR( BTCpuSetContext );
      GET_PTR( BTCpuSimulate );
      GET_PTR( BTCpuFlushInstructionCache2 );
-@@ -1544,3 +1571,11 @@ NTSTATUS WINAPI Wow64RaiseException( int code, EXCEPTION_RECORD *rec )
+@@ -1713,3 +1740,11 @@
  
      return STATUS_SUCCESS;
  }
@@ -323,8 +303,6 @@ index 9fdef4a..19c4f84 100644
 +{
 +    return pBTCpuSuspendLocalThread( thread, count );
 +}
-diff --git a/dlls/wow64/wow64.spec b/dlls/wow64/wow64.spec
-index 5b4e565..8f95dfc 100644
 --- a/dlls/wow64/wow64.spec
 +++ b/dlls/wow64/wow64.spec
 @@ -22,7 +22,7 @@
@@ -336,11 +314,9 @@ index 5b4e565..8f95dfc 100644
  @ stdcall -norelay Wow64SystemServiceEx(long ptr)
  @ stub Wow64ValidateUserCallTarget
  @ stub Wow64ValidateUserCallTargetFilter
-diff --git a/include/winternl.h b/include/winternl.h
-index bed72e8..cd2d789 100644
 --- a/include/winternl.h
 +++ b/include/winternl.h
-@@ -5419,6 +5419,7 @@ NTSYSAPI USHORT    WINAPI RtlWow64GetCurrentMachine(void);
+@@ -5420,6 +5420,7 @@
  NTSYSAPI NTSTATUS  WINAPI RtlWow64GetProcessMachines(HANDLE,USHORT*,USHORT*);
  NTSYSAPI NTSTATUS  WINAPI RtlWow64GetSharedInfoProcess(HANDLE,BOOLEAN*,WOW64INFO*);
  NTSYSAPI NTSTATUS  WINAPI RtlWow64IsWowGuestMachineSupported(USHORT,BOOLEAN*);

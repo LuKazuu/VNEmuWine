@@ -1,6 +1,6 @@
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -3022,6 +3022,113 @@
+@@ -3027,6 +3027,91 @@
  
  
  /***********************************************************************
@@ -34,38 +34,24 @@
 +    void *tmp;
 +    off_t view_offset = (char *)base - (char *)view->base;
 +
-+    /* First verify that anonymous executable mappings are permitted at
-+     * all. If the kernel refuses PROT_EXEC even for anonymous memory
-+     * (e.g. a hardened configuration), bail out before touching the
-+     * existing mapping so we never leave the section unmapped. */
 +    probe = mmap( NULL, host_page_size, PROT_READ | PROT_WRITE | PROT_EXEC,
 +                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0 );
 +    if (probe == MAP_FAILED) return STATUS_NO_MEMORY;
 +    munmap( probe, host_page_size );
 +
-+    /* Save the existing section contents (the file-backed mapping is
-+     * still readable at this point; we are about to unmap it). */
 +    if (!(tmp = malloc( size ))) return STATUS_NO_MEMORY;
 +    memcpy( tmp, base, size );
 +
-+    /* Drop the file-backed mapping. */
 +    if (munmap( base, size ))
 +    {
 +        free( tmp );
 +        return STATUS_NO_MEMORY;
 +    }
 +
-+    /* Create an anonymous mapping in its place. MAP_FIXED ensures we
-+     * get back the exact same virtual address. Anonymous mappings are
-+     * not subject to MS_NOEXEC, so PROT_EXEC succeeds here even on
-+     * /sdcard. */
 +    addr = mmap( base, size, PROT_READ | PROT_WRITE | PROT_EXEC,
 +                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0 );
 +    if (addr != base)
 +    {
-+        /* The anonymous remap failed. Restore the original file-backed
-+         * section (file data + anonymous BSS tail) so the image does
-+         * not end up with a hole, then report failure. */
 +        if (file_size &&
 +            map_file_into_view( view, fd, view_offset, file_size, file_start,
 +                                VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY, removable ) == STATUS_SUCCESS &&
@@ -78,9 +64,6 @@
 +            return STATUS_ACCESS_DENIED;
 +        }
 +
-+        /* Restoration also failed; re-map the whole range as anonymous
-+         * RW as a last resort so at least the address range stays
-+         * mapped and accessible. */
 +        if (mmap( base, size, PROT_READ | PROT_WRITE,
 +                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0 ) == base)
 +        {
@@ -92,14 +75,9 @@
 +        return STATUS_NO_MEMORY;
 +    }
 +
-+    /* Restore the section contents (code + initialized data + BSS). */
 +    memcpy( base, tmp, size );
 +    free( tmp );
 +
-+    /* Re-apply the intended per-page protections. set_vprot already
-+     * updated the page table, so this turns e.g. .text back into RX;
-+     * without it the anonymous mapping would remain RWX and defeat
-+     * Wine's exec/write protection. */
 +    if (mprotect_range( base, size, 0, 0 ))
 +    {
 +        ERR( "failed to re-apply protection on remapped section %p-%p\n",
@@ -114,7 +92,7 @@
   *           map_image_into_view
   *
   * Map an executable (PE format) image into an existing view.
-@@ -3093,7 +3200,10 @@
+@@ -3098,7 +3183,10 @@
          }
  
          /* set the image protections */
@@ -126,7 +104,7 @@
  
          /* no relocations are performed on non page-aligned binaries */
          status = STATUS_SUCCESS;
-@@ -3253,8 +3363,30 @@
+@@ -3258,8 +3346,27 @@
          if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) vprot |= VPROT_EXEC;
  
          if (!set_vprot( view, ptr + sec[i].VirtualAddress, size, vprot ) && (vprot & VPROT_EXEC))
@@ -135,9 +113,6 @@
 +        {
 +            if (sec[i].Characteristics & IMAGE_SCN_MEM_SHARED)
 +            {
-+                /* A shared+executable section must remain shared; remapping it as
-+                 * a private anonymous copy would break its cross-process sharing
-+                 * contract, so leave it to the caller's error path instead. */
 +                ERR( "failed to set %08x protection on shared section %.8s of %s, noexec filesystem?\n",
 +                     sec[i].Characteristics, sec[i].Name, debugstr_us(nt_name) );
 +            }

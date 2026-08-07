@@ -1,22 +1,20 @@
-diff --git a/dlls/quartz/vmr7.c b/dlls/quartz/vmr7.c
-index cb38a18..4fc6ac5 100644
---- a/dlls/quartz/vmr7.c
-+++ b/dlls/quartz/vmr7.c
-@@ -285,6 +285,13 @@ static HRESULT vmr_render(struct strmbase_renderer *iface, IMediaSample *sample)
-     return IVMRImagePresenter_PresentImage(filter->presenter, filter->cookie, &info);
- }
+--- a/dlls/quartz/quartz_private.h
++++ b/dlls/quartz/quartz_private.h
+@@ -153,4 +153,11 @@
+ HRESULT WINAPI BaseControlWindowImpl_HideCursor(IVideoWindow *iface, LONG HideCursor);
+ HRESULT WINAPI BaseControlWindowImpl_IsCursorHidden(IVideoWindow *iface, LONG *CursorHidden);
  
-+static BOOL vmr7_use_gdi_fallback(void)
++
++static inline BOOL vmr7_use_gdi_fallback(void)
 +{
 +    const char *value = getenv("WINE_VMR7_GDI_FALLBACK");
-+
 +    return value && value[0] && value[0] != '0';
 +}
 +
- static BOOL fourcc_is_supported(IDirectDraw7 *ddraw, DWORD fourcc)
- {
-     DWORD *codes, count, i;
-@@ -333,6 +340,13 @@ static HRESULT vmr_query_accept(struct strmbase_renderer *iface, const AM_MEDIA_
+ #endif /* __QUARTZ_PRIVATE_INCLUDED__ */
+--- a/dlls/quartz/vmr7.c
++++ b/dlls/quartz/vmr7.c
+@@ -333,6 +333,13 @@
      if (bitmap_header->biCompression == BI_RGB || bitmap_header->biCompression == BI_BITFIELDS)
          return S_OK;
  
@@ -30,21 +28,12 @@ index cb38a18..4fc6ac5 100644
      if (!ddraw)
      {
          if (FAILED(DirectDrawCreateEx(NULL, (void **)&ddraw, &IID_IDirectDraw7, NULL)))
-diff --git a/dlls/quartz/vmr7_presenter.c b/dlls/quartz/vmr7_presenter.c
-index 2931dc4..47b56f0 100644
 --- a/dlls/quartz/vmr7_presenter.c
 +++ b/dlls/quartz/vmr7_presenter.c
-@@ -46,6 +46,115 @@ static struct vmr7_presenter *impl_from_IVMRImagePresenter(IVMRImagePresenter *i
+@@ -46,6 +46,108 @@
      return CONTAINING_RECORD(iface, struct vmr7_presenter, IVMRImagePresenter_iface);
  }
  
-+static BOOL vmr7_presenter_use_gdi_fallback(void)
-+{
-+    const char *value = getenv("WINE_VMR7_GDI_FALLBACK");
-+
-+    return value && value[0] && value[0] != '0';
-+}
-+
 +static HRESULT vmr7_presenter_present_rgb_gdi(struct vmr7_presenter *presenter, IDirectDrawSurface7 *surface)
 +{
 +    DDSURFACEDESC2 surface_desc = {.dwSize = sizeof(surface_desc)};
@@ -150,11 +139,11 @@ index 2931dc4..47b56f0 100644
  static HRESULT WINAPI image_presenter_QueryInterface(IVMRImagePresenter *iface, REFIID iid, void **out)
  {
      struct vmr7_presenter *presenter = impl_from_IVMRImagePresenter(iface);
-@@ -127,6 +236,13 @@ static HRESULT WINAPI image_presenter_PresentImage(IVMRImagePresenter *iface,
+@@ -127,6 +229,13 @@
      if (info->dwFlags & VMRSample_SrcDstRectsValid)
          FIXME("Ignoring src/dst rects.\n");
  
-+    if (vmr7_presenter_use_gdi_fallback())
++    if (vmr7_use_gdi_fallback())
 +    {
 +        if (FAILED(hr = vmr7_presenter_present_rgb_gdi(presenter, info->lpSurf)))
 +            WARN("VMR7 GDI fallback failed, dropping frame to avoid DirectDraw primary blit, hr %#lx.\n", hr);

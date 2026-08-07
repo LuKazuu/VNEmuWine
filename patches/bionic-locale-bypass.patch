@@ -1,37 +1,10 @@
-Bypass Android bionic libc locale limitation for Wine.
-
-Android's bionic libc does not support locale settings beyond "C" and "C.UTF-8".
-setlocale(LC_ALL, "") always fails or returns "C"/"C.UTF-8" regardless of what
-LC_ALL, LANG, etc. are set to in the environment. This means Wine cannot detect
-the user's desired locale (e.g. ja_JP for Japanese visual novels).
-
-This patch:
-1. Adds is_bionic_no_locale() and get_android_locale() helpers that read locale
-   directly from environment variables following standard Unix priority
-   (LC_ALL > LC_CTYPE/LC_MESSAGES > LANG), skipping over meaningless
-   "C"/"C.UTF-8"/"POSIX" values that bionic always returns.
-2. Under __ANDROID__, init_locale() bypasses setlocale() entirely and uses the
-   environment-based helper instead.
-3. Updates unix_to_win_locale() to recognize "C.UTF-8" and "POSIX" as no-locale
-   fallback triggers (same as "C"), and adds LANG as a secondary fallback when
-   LC_ALL is also meaningless.
-
-diff -uNr a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
 --- a/dlls/ntdll/unix/env.c
 +++ b/dlls/ntdll/unix/env.c
-@@ -84,6 +84,51 @@
+@@ -84,6 +84,43 @@
  static char system_locale[LOCALE_NAME_MAX_LENGTH];
  static char user_locale[LOCALE_NAME_MAX_LENGTH];
  
 +#ifdef __ANDROID__
-+/*
-+ * Android bionic libc does not support locale settings beyond "C" and "C.UTF-8".
-+ * setlocale() always returns "C" or "C.UTF-8" regardless of environment variables
-+ * like LC_ALL, LC_CTYPE, LC_MESSAGES, or LANG. This helper reads the effective
-+ * locale directly from the environment, following standard Unix priority:
-+ *   LC_ALL > LC_CATEGORY > LANG
-+ * It skips over meaningless bionic values ("C", "C.UTF-8", "POSIX").
-+ */
 +static BOOL is_bionic_no_locale( const char *locale )
 +{
 +    return (!locale || !locale[0]
@@ -71,14 +44,11 @@ diff -uNr a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
  /* system directory with trailing backslash */
  const WCHAR system_dir[] = {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\',
                              's','y','s','t','e','m','3','2','\\',0};
-@@ -640,10 +685,21 @@
+@@ -640,10 +677,18 @@
      char buffer[LOCALE_NAME_MAX_LENGTH];
      char *p, *country = NULL, *modifier = NULL;
  
 -    if (!unix_name || !unix_name[0] || !strcmp( unix_name, "C" ))
-+    /* "C", "C.UTF-8", and "POSIX" represent the default/bionic locale and
-+     * carry no useful locale information. Fall back to environment variables
-+     * to find the user's actual desired locale. */
 +    if (!unix_name || !unix_name[0] || !strcmp( unix_name, "C" )
 +        || !strcmp( unix_name, "C.UTF-8" ) || !strcmp( unix_name, "POSIX" ))
      {
@@ -95,13 +65,11 @@ diff -uNr a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
      }
  
      if (strlen( unix_name ) >= LOCALE_NAME_MAX_LENGTH) return FALSE;
-@@ -730,9 +786,16 @@
+@@ -730,9 +775,14 @@
      const NLS_LOCALE_DATA *locale;
      char *p;
  
 +#ifdef __ANDROID__
-+    /* Bionic setlocale() cannot set non-C locales; read locale directly from
-+     * the environment using the priority: LC_ALL > LC_CTYPE/LC_MESSAGES > LANG */
 +    if (!unix_to_win_locale( get_android_locale( LC_CTYPE ), system_locale )) system_locale[0] = 0;
 +    if (!unix_to_win_locale( get_android_locale( LC_MESSAGES ), user_locale )) user_locale[0] = 0;
 +#else
