@@ -1,0 +1,41 @@
+diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
+index 0ba0282..c7289a8 100644
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -802,6 +802,36 @@ static BOOL initialize_vk_device( TEB *teb, struct context *ctx )
+     static PFN_vkGetPhysicalDeviceProperties2KHR p_vkGetPhysicalDeviceProperties2KHR;
+ 
+     if (buffers.vk_device) return TRUE; /* already initialized */
++
++    /* WINE_DDRAW_GDI_FALLBACK also disables the Vulkan buffer-storage path
++     * on wow64. This is needed on stacks where the Vulkan driver advertises
++     * VK_EXT_map_memory_placed (memoryMapPlaced feature reported as supported
++     * by vkGetPhysicalDeviceFeatures2KHR) but vkMapMemory2KHR with
++     * VK_MEMORY_MAP_PLACED_BIT_EXT does not actually honour pPlacedAddress
++     * and returns a different host_ptr. On such stacks, wow64_map_buffer()
++     * hits:
++     *   assertion "buffer->host_ptr == buffer->vm_ptr" failed
++     * the first time a 32-bit app calls glMapBuffer on a buffer created with
++     * glBufferStorage + GL_MAP_PERSISTENT_BIT (e.g. wined3d's D3D7 vertex
++     * buffer pool, observed as a 64 MiB GL_ARRAY_BUFFER storage).
++     *
++     * Observed on Zink-over-a-Vulkan-wrapper without DRI3 on Termux-X11
++     * (the same stack that needs WINE_DDRAW_GDI_FALLBACK for ddraw).
++     *
++     * Returning FALSE here makes make_context_current() fall back to
++     * GL_AMD_pinned_memory (if available) or disable GL_ARB_buffer_storage
++     * entirely, so 32-bit apps use the regular glBufferData + glMapBuffer
++     * copy path instead. 64-bit contexts are unaffected (this whole branch
++     * is guarded by is_wow64() in make_context_current()). */
++    {
++        const char *env = getenv("WINE_DDRAW_GDI_FALLBACK");
++        if (env && env[0] && env[0] != '0')
++        {
++            WARN("WINE_DDRAW_GDI_FALLBACK is set; disabling Vulkan buffer storage path for wow64.\n");
++            return FALSE;
++        }
++    }
++
+     if (!client->extensions[GL_EXT_memory_object_win32] )
+     {
+         TRACE( "GL_EXT_memory_object_win32 is not supported\n" );
