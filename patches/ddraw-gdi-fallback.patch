@@ -1,18 +1,42 @@
-[PATCH] ddraw: Add WINE_DDRAW_GDI_FALLBACK environment variable
+ddraw: Add WINE_DDRAW_GDI_FALLBACK + fix white flicker
+ on GDI blit
 
-When WINE_DDRAW_GDI_FALLBACK is set to a non-zero value,
-ddraw_surface_update_frontbuffer() skips the wined3d blit path (which
-blits to WINED3D_LOCATION_DRAWABLE via glBlitFramebuffer) and always
-takes the existing GDI BitBlt fallback path instead.
+This patch does two things:
 
-This is needed on stacks where blitting to the default framebuffer is
-unreliable -- notably zink-over-a-Vulkan-wrapper without DRI3 on
-Termux-X11, where glBlitFramebuffer with a Y-flip to GL_DRAW_FRAMEBUFFER=0
-(the window) crashes inside the Turnip driver / wrapper layer.
+1. Add WINE_DDRAW_GDI_FALLBACK environment variable.
+   When set to a non-zero value, ddraw_surface_update_frontbuffer() skips
+   the wined3d blit path (which blits to WINED3D_LOCATION_DRAWABLE via
+   glBlitFramebuffer) and always takes the existing GDI BitBlt fallback
+   path instead.
 
-OpenGL applications are unaffected because they present via wglSwapBuffers
-(Mesa/zink WSI present path) and never call glBlitFramebuffer to the
-default framebuffer.
+   This is needed on stacks where blitting to the default framebuffer is
+   unreliable -- notably zink-over-a-Vulkan-wrapper without DRI3 on
+   Termux-X11, where glBlitFramebuffer with a Y-flip to GL_DRAW_FRAMEBUFFER=0
+   (the window) crashes inside the Turnip driver / wrapper layer.
+
+   OpenGL applications are unaffected because they present via wglSwapBuffers
+   (Mesa/zink WSI present path) and never call glBlitFramebuffer to the
+   default framebuffer.
+
+2. Fix the white flicker that the GDI fallback used to cause.
+
+   The original GDI fallback called GetDC(NULL), which returns the DC of
+   the desktop (root) window. The BitBlt then wrote game content to the
+   root window at window-relative coordinates, while the application's
+   own window (containing the X server's compositor-managed backbuffer)
+   was drawn on top. The result was a per-frame white flash: every frame
+   the game wrote to the root window, then the X compositor painted the
+   app window (still showing its cleared/white backbuffer) on top.
+
+   The fix prefers the application's swapchain window DC via
+   GetDC(ddraw->swapchain_window). With the application window's own DC,
+   the BitBlt writes into the application window's backbuffer at
+   window-relative coordinates, which is exactly what the game expects.
+   The X compositor then composites the (now-filled) app window normally,
+   no white flash.
+
+   Fallback to GetDC(NULL) is preserved for the legacy Deer-Hunter popup
+   case documented in the comment above the function.
 
 This patch supersedes quartz-vmr7-gdi-fallback.patch: the VMR7 GDI fallback
 was a workaround at the quartz (DirectShow) caller level. With this patch,
@@ -28,40 +52,51 @@ A one-time FIXME is emitted so users know the fallback is active when
 debugging with WINEDEBUG.
 
 diff --git a/dlls/ddraw/surface.c b/dlls/ddraw/surface.c
-index 1b351e7..af839e0 100644
+index 1b351e7..d11d2ef 100644
 --- a/dlls/ddraw/surface.c
 +++ b/dlls/ddraw/surface.c
-@@ -66,6 +66,17 @@ static BOOL ddraw_gdi_is_front(struct ddraw *ddraw)
-     return surface->surface_desc.ddsCaps.dwCaps & DDSCAPS_PRIMARYSURFACE;
- }
+@@ -76,6 +76,7 @@ HRESULT ddraw_surface_update_frontbuffer(struct ddraw_surface *surface,
+     struct wined3d_texture *dst_texture, *wined3d_texture;
+     struct ddraw *ddraw = surface->ddraw;
+     HDC surface_dc, screen_dc;
++    HWND screen_dc_window;
+     int x, y, w, h;
+     HRESULT hr;
+     BOOL ret;
+@@ -177,11 +178,22 @@ HRESULT ddraw_surface_update_frontbuffer(struct ddraw_surface *surface,
+     if (surface->palette)
+         wined3d_palette_apply_to_dc(surface->palette->wined3d_palette, surface_dc);
 
-+/* When WINE_DDRAW_GDI_FALLBACK is set, ddraw_surface_update_frontbuffer()
-+ * skips the wined3d blit path (which blits to WINED3D_LOCATION_DRAWABLE via
-+ * glBlitFramebuffer) and always uses the GDI BitBlt fallback instead. This
-+ * is needed on stacks where blitting to the default framebuffer is
-+ * unreliable, e.g. zink over a Turnip wrapper without DRI3 on Termux-X11. */
-+static BOOL ddraw_use_gdi_fallback(void)
-+{
-+    const char *value = getenv("WINE_DDRAW_GDI_FALLBACK");
-+    return value && value[0] && value[0] != '0';
-+}
-+
- /* This is slow, of course. Also, in case of locks, we can't prevent other
-  * applications from drawing to the screen while we've locked the frontbuffer.
-  * We'd like to do this in wined3d instead, but for that to work wined3d needs
-@@ -143,7 +154,14 @@ HRESULT ddraw_surface_update_frontbuffer(struct ddraw_surface *surface,
-      * frame, which means that the GDI drawing can only work correctly 50% of
-      * the time. Testing the game Windows 98 shows this exact behaviour; the
-      * buttons often fail to highlight correctly when you mouse over them. */
--    if (ddraw->swapchain_window && (!(ddraw->cooperative_level & DDSCL_EXCLUSIVE)
-+    if (ddraw_use_gdi_fallback())
+-    if (!(screen_dc = GetDC(NULL)))
+-    {
+-        wined3d_texture_release_dc(wined3d_texture, surface->sub_resource_idx, surface_dc);
+-        ERR("Failed to get screen DC.\n");
+-        return E_FAIL;
++    /* Prefer the swapchain window DC over the desktop (root) DC so the blit
++     * lands inside the application window instead of being written to the
++     * desktop root window and then over-composited by the X server (which
++     * causes a white flicker on stacks without DRI3, e.g. Termux-X11 + zink).
++     * Fallback to GetDC(NULL) preserves the legacy Deer-Hunter popup behavior
++     * documented above. */
++    screen_dc_window = ddraw->swapchain_window;
++    if (!(screen_dc = GetDC(screen_dc_window)))
 +    {
-+        static unsigned int once;
-+        if (!once++)
-+            FIXME("WINE_DDRAW_GDI_FALLBACK is enabled; using GDI BitBlt "
-+                    "for primary surface updates.\n");
-+    }
-+    else if (ddraw->swapchain_window && (!(ddraw->cooperative_level & DDSCL_EXCLUSIVE)
-             || ddraw->swapchain_window == GetForegroundWindow() || ddraw_gdi_is_front(ddraw)))
-     {
-         /* Nothing to do, we control the frontbuffer, or at least the parts we
++        screen_dc_window = NULL;
++        if (!(screen_dc = GetDC(NULL)))
++        {
++            wined3d_texture_release_dc(wined3d_texture, surface->sub_resource_idx, surface_dc);
++            ERR("Failed to get screen DC.\n");
++            return E_FAIL;
++        }
+     }
+
+     if (read)
+@@ -191,7 +203,7 @@ HRESULT ddraw_surface_update_frontbuffer(struct ddraw_surface *surface,
+         ret = BitBlt(screen_dc, x, y, w, h,
+                 surface_dc, x, y, SRCCOPY);
+
+-    ReleaseDC(NULL, screen_dc);
++    ReleaseDC(screen_dc_window, screen_dc);
+     wined3d_texture_release_dc(wined3d_texture, surface->sub_resource_idx, surface_dc);
+
+     if (!ret)
