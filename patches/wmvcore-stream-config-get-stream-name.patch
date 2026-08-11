@@ -1,0 +1,60 @@
+diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
+index 6a800e4..d5ba326 100644
+--- a/dlls/winegstreamer/wm_reader.c
++++ b/dlls/winegstreamer/wm_reader.c
+@@ -451,8 +451,53 @@ static HRESULT WINAPI stream_config_SetStreamNumber(IWMStreamConfig *iface, WORD
+ 
+ static HRESULT WINAPI stream_config_GetStreamName(IWMStreamConfig *iface, WCHAR *name, WORD *len)
+ {
+-    FIXME("iface %p, name %p, len %p, stub!\n", iface, name, len);
+-    return E_NOTIMPL;
++    struct stream_config *config = impl_from_IWMStreamConfig(iface);
++    struct wm_reader *reader = config->stream->reader;
++    DWORD needed;
++    WORD req_len;
++    char *str;
++    HRESULT hr = S_OK;
++
++    TRACE("iface %p, name %p, len %p.\n", iface, name, len);
++
++    if (!len)
++        return E_POINTER;
++
++    EnterCriticalSection(&reader->cs);
++
++    /* wg_parser_stream_get_tag() returns a malloc'd UTF-8 string (or NULL if
++     * the container has no stream-name tag). Convert it to WCHARs the same way
++     * media_source.c does for MF_SD_STREAM_NAME. When the tag is absent we
++     * still report a 1-character buffer so callers get a valid empty string
++     * instead of E_NOTIMPL, which is what caused verethragna.exe to crash:
++     * the game queries the stream name twice (name=NULL) and then dereferences
++     * the never-allocated name buffer because the stub never reported a length. */
++    str = wg_parser_stream_get_tag(config->stream->wg_stream, WG_PARSER_TAG_NAME);
++    needed = str ? MultiByteToWideChar(CP_UTF8, 0, str, -1, NULL, 0) : 1;
++
++    req_len = *len;
++    *len = needed;
++
++    if (!name)
++    {
++        /* Length query: just report the required size. */
++    }
++    else if (req_len < needed)
++    {
++        hr = ASF_E_BUFFERTOOSMALL;
++    }
++    else if (str)
++    {
++        MultiByteToWideChar(CP_UTF8, 0, str, -1, name, needed);
++    }
++    else
++    {
++        name[0] = 0;
++    }
++
++    free(str);
++    LeaveCriticalSection(&reader->cs);
++    return hr;
+ }
+ 
+ static HRESULT WINAPI stream_config_SetStreamName(IWMStreamConfig *iface, const WCHAR *name)
