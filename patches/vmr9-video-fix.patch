@@ -1,0 +1,128 @@
+diff --git a/dlls/quartz/tests/vmr9.c b/dlls/quartz/tests/vmr9.c
+index 1c24a1f..e1bc3cc 100644
+--- a/dlls/quartz/tests/vmr9.c
++++ b/dlls/quartz/tests/vmr9.c
+@@ -2943,9 +2943,22 @@ static void test_allocate_surface_helper(void)
+     info.Format = D3DFMT_A8R8G8B8;
+     info.dwFlags = VMR9AllocFlag_OffscreenSurface | VMR9AllocFlag_TextureSurface;
+     count = 1;
++    surfaces[0] = NULL;
+     hr = IVMRSurfaceAllocatorNotify9_AllocateSurfaceHelper(notify, &info, &count, surfaces);
+-    ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
++    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+     ok(count == 1, "Got count %lu.\n", count);
++    ok(!!surfaces[0], "Surface 0 was not allocated.\n");
++    /* When TextureSurface and OffscreenSurface are requested together the
++     * allocator must return a texture surface, which can be used both as a
++     * texture and as an offscreen plain surface. This is required by
++     * real-world applications (e.g. custom VMR9 allocator/presenters used
++     * by Visual Novel engines) that request YUV surfaces (NV12, YV12, etc.)
++     * for shader-based colour conversion. */
++    hr = IDirect3DSurface9_GetContainer(surfaces[0], &IID_IDirect3DTexture9, (void **)&container);
++    ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
++    IDirect3DTexture9_Release(container);
++    IDirect3DSurface9_Release(surfaces[0]);
++    surfaces[0] = NULL;
+ 
+ out:
+     IVMRSurfaceAllocatorNotify9_Release(notify);
+diff --git a/dlls/quartz/vmr9.c b/dlls/quartz/vmr9.c
+index 611a125..79419f8 100644
+--- a/dlls/quartz/vmr9.c
++++ b/dlls/quartz/vmr9.c
+@@ -1518,12 +1518,33 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
+             allocinfo->dwFlags, allocinfo->dwWidth, allocinfo->dwHeight,
+             allocinfo->Format, allocinfo->Format, allocinfo->Pool, allocinfo->MinBuffers);
+ 
+-    if ((allocinfo->dwFlags & VMR9AllocFlag_TextureSurface)
+-            && (allocinfo->dwFlags & VMR9AllocFlag_OffscreenSurface))
+-    {
+-        WARN("Invalid flags specified; returning E_INVALIDARG.\n");
+-        return E_INVALIDARG;
+-    }
++    /* VMR9AllocFlag_3DRenderTarget, VMR9AllocFlag_TextureSurface and
++     * VMR9AllocFlag_OffscreenSurface are documented as mutually exclusive
++     * in the VMR9 SDK, and the previous implementation rejected the
++     * TextureSurface | OffscreenSurface combination with E_INVALIDARG.
++     *
++     * However, real-world applications - notably the custom VMR9
++     * allocator/presenters used by Visual Novel engines such as KiriKiri -
++     * routinely pass VMR9AllocFlag_TextureSurface together with
++     * VMR9AllocFlag_OffscreenSurface when allocating YUV video surfaces
++     * (e.g. NV12, YV12). They rely on the allocator returning a texture
++     * surface so the surface can be sampled by a pixel shader for
++     * YUV-to-RGB colour conversion.
++     *
++     * Rejecting that combination forced such applications to fall back to
++     * a plain offscreen surface, which cannot be bound as a texture. As a
++     * result the downstream rendering pipeline raised an exception and the
++     * video never played.
++     *
++     * To fix this, the combination is now honoured by allocating a texture
++     * surface (its top-level surface can be retrieved via
++     * IDirect3DBaseTexture9::GetSurfaceLevel and used as either a texture
++     * or an offscreen plain surface, so it is a strict superset of either
++     * flag requested alone). The branches below use bitwise tests instead
++     * of equality so additional bits in dwFlags (e.g.
++     * VMR9AllocFlag_RGBDynamicSwitch, VMR9AllocFlag_DXVATarget) no longer
++     * cause the request to be silently dropped through to the
++     * "Unhandled flags" fallback. */
+ 
+     if (!allocinfo->Format)
+     {
+@@ -1550,17 +1571,22 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
+         return VFW_E_WRONG_STATE;
+     }
+ 
+-    if (allocinfo->dwFlags == VMR9AllocFlag_OffscreenSurface)
++    /* Allocation strategy: priority is 3DRenderTarget > TextureSurface >
++     * OffscreenSurface. This means a request that combines TextureSurface
++     * with OffscreenSurface is satisfied as a texture, which is the more
++     * capable surface type and what the application actually wants when
++     * both flags are passed. */
++    if (allocinfo->dwFlags & VMR9AllocFlag_3DRenderTarget)
+     {
+         for (i = 0; i < *numbuffers; ++i)
+         {
+-            hr = IDirect3DDevice9_CreateOffscreenPlainSurface(This->allocator_d3d9_dev,  allocinfo->dwWidth, allocinfo->dwHeight,
+-                                                             allocinfo->Format, allocinfo->Pool, &surface[i], NULL);
+-            if (FAILED(hr))
++            if (FAILED(hr = IDirect3DDevice9_CreateRenderTarget(This->allocator_d3d9_dev,
++                    allocinfo->dwWidth, allocinfo->dwHeight, allocinfo->Format,
++                    D3DMULTISAMPLE_NONE, 0, FALSE, &surface[i], NULL)))
+                 break;
+         }
+     }
+-    else if (allocinfo->dwFlags == VMR9AllocFlag_TextureSurface)
++    else if (allocinfo->dwFlags & VMR9AllocFlag_TextureSurface)
+     {
+         for (i = 0; i < *numbuffers; ++i)
+         {
+@@ -1574,20 +1600,21 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
+             IDirect3DTexture9_Release(texture);
+         }
+     }
+-    else if (allocinfo->dwFlags == VMR9AllocFlag_3DRenderTarget)
++    else if (allocinfo->dwFlags & VMR9AllocFlag_OffscreenSurface)
+     {
+         for (i = 0; i < *numbuffers; ++i)
+         {
+-            if (FAILED(hr = IDirect3DDevice9_CreateRenderTarget(This->allocator_d3d9_dev,
+-                    allocinfo->dwWidth, allocinfo->dwHeight, allocinfo->Format,
+-                    D3DMULTISAMPLE_NONE, 0, FALSE, &surface[i], NULL)))
++            hr = IDirect3DDevice9_CreateOffscreenPlainSurface(This->allocator_d3d9_dev,  allocinfo->dwWidth, allocinfo->dwHeight,
++                                                             allocinfo->Format, allocinfo->Pool, &surface[i], NULL);
++            if (FAILED(hr))
+                 break;
+         }
+     }
+     else
+     {
+-        FIXME("Unhandled flags %#lx.\n", allocinfo->dwFlags);
+-        return E_NOTIMPL;
++        WARN("No surface allocation flag specified in dwFlags %#lx; returning E_INVALIDARG.\n",
++                allocinfo->dwFlags);
++        return E_INVALIDARG;
+     }
+ 
+     if (FAILED(hr))
