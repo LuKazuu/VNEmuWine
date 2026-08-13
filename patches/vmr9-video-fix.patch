@@ -1,5 +1,7 @@
 diff --git a/dlls/quartz/tests/vmr9.c b/dlls/quartz/tests/vmr9.c
-index 1c24a1f..e1bc3cc 100644
+old mode 100644
+new mode 100755
+index 1c24a1f..e1bc3cc
 --- a/dlls/quartz/tests/vmr9.c
 +++ b/dlls/quartz/tests/vmr9.c
 @@ -2943,9 +2943,22 @@ static void test_allocate_surface_helper(void)
@@ -27,7 +29,9 @@ index 1c24a1f..e1bc3cc 100644
  out:
      IVMRSurfaceAllocatorNotify9_Release(notify);
 diff --git a/dlls/quartz/vmr9.c b/dlls/quartz/vmr9.c
-index 611a125..79419f8 100644
+old mode 100644
+new mode 100755
+index 611a125..79419f8
 --- a/dlls/quartz/vmr9.c
 +++ b/dlls/quartz/vmr9.c
 @@ -1518,12 +1518,33 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
@@ -126,3 +130,42 @@ index 611a125..79419f8 100644
      }
  
      if (FAILED(hr))
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+old mode 100644
+new mode 100755
+index 38971f2..21549e1
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -2312,6 +2312,32 @@ static HRESULT WINAPI GSTOutPin_DecideBufferSize(struct strmbase_source *iface,
+         WAVEFORMATEX *format = (WAVEFORMATEX *)pin->pin.pin.mt.pbFormat;
+         buffer_size = format->nAvgBytesPerSec;
+     }
++    else if (IsEqualGUID(&pin->pin.pin.mt.formattype, &FORMAT_WaveFormatEx))
++    {
++        /* Compressed audio (e.g. WMA Pro, WMA Lossless). The downstream
++         * decoder expects each IMediaSample to contain a complete,
++         * unfragmented compressed frame. For WMA Pro the frame size is
++         * carried in nBlockAlign; delivering a sample that is smaller
++         * than nBlockAlign causes the decoder to reject it with
++         * "Input packet too small", which in turn causes applications
++         * that monitor the audio path (notably KiriKiri-based Visual
++         * Novels using custom VMR9 allocator/presenters) to abort video
++         * playback entirely via an EC_USER+1 event.
++         *
++         * GStreamer's ASF demuxer already delivers complete frames as
++         * GstBuffers, but the default buffer_size of 16384 is smaller
++         * than nBlockAlign for high-bitrate WMA Pro streams (e.g.
++         * 20434 bytes for 440 kbps 44.1 kHz stereo). When that happens,
++         * send_buffer() in quartz_parser.c splits the GStreamer buffer
++         * across two IMediaSamples, fragmenting the compressed frame.
++         *
++         * Fix: size the allocator to at least nBlockAlign so that a
++         * complete compressed frame always fits in a single
++         * IMediaSample. */
++        WAVEFORMATEX *format = (WAVEFORMATEX *)pin->pin.pin.mt.pbFormat;
++        if (format->nBlockAlign > buffer_size)
++            buffer_size = format->nBlockAlign;
++    }
+     else if (IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_MPEG1AudioPayload)
+             || IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_MP3))
+     {
