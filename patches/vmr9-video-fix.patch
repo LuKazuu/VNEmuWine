@@ -1,3 +1,25 @@
+diff --git a/dlls/qasf/asfreader.c b/dlls/qasf/asfreader.c
+index 0bebfa9..539a2b6 100644
+--- a/dlls/qasf/asfreader.c
++++ b/dlls/qasf/asfreader.c
+@@ -616,6 +616,17 @@ static HRESULT WINAPI asf_reader_DecideBufferSize(struct strmbase_source *iface,
+         WAVEFORMATEX *format = (WAVEFORMATEX *)stream->source.pin.mt.pbFormat;
+         buffer_size = format->nAvgBytesPerSec;
+     }
++    else if (IsEqualGUID(&stream->source.pin.mt.formattype, &FORMAT_WaveFormatEx))
++    {
++        /* Compressed audio (e.g. WMA Pro). The downstream DMO decoder expects
++         * each IMediaSample to contain a complete compressed frame. For WMA Pro
++         * the frame size is nBlockAlign (e.g. 20434 bytes for 440 kbps 44.1 kHz
++         * stereo). The default 16384 is too small, causing the decoder to reject
++         * fragments with "Input packet too small". */
++        WAVEFORMATEX *format = (WAVEFORMATEX *)stream->source.pin.mt.pbFormat;
++        if (format->nBlockAlign > buffer_size)
++            buffer_size = format->nBlockAlign;
++    }
+ 
+     req_props->cBuffers = max(req_props->cBuffers, 1);
+     req_props->cbBuffer = max(req_props->cbBuffer, buffer_size);
 diff --git a/dlls/quartz/tests/vmr9.c b/dlls/quartz/tests/vmr9.c
 index 1c24a1f..00049bb 100644
 --- a/dlls/quartz/tests/vmr9.c
