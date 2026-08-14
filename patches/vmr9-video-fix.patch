@@ -1,14 +1,34 @@
 diff --git a/dlls/qasf/asfreader.c b/dlls/qasf/asfreader.c
-index 0bebfa9..d52835b 100644
+index 0bebfa9..0b7a95d 100644
 --- a/dlls/qasf/asfreader.c
 +++ b/dlls/qasf/asfreader.c
-@@ -616,6 +616,13 @@ static HRESULT WINAPI asf_reader_DecideBufferSize(struct strmbase_source *iface,
+@@ -534,6 +534,20 @@ static HRESULT asf_reader_init_stream(struct strmbase_filter *iface)
+             break;
+         }
+ 
++        /* If the downstream filter expects compressed audio (e.g. WMA Pro
++         * passed to a DMO Wrapper decoder), enable compressed stream reading.
++         * Otherwise the IWMReader tries to decode internally (which it can't
++         * for WMA Pro), applies a 16384-byte sample cap (meant for PCM),
++         * and fragments the compressed frames, causing the downstream decoder
++         * to reject them with "Input packet too small". */
++        if (IsEqualGUID(&stream->source.pin.mt.formattype, &FORMAT_WaveFormatEx)
++                && !IsEqualGUID(&stream->source.pin.mt.subtype, &MEDIASUBTYPE_PCM)
++                && !IsEqualGUID(&stream->source.pin.mt.subtype, &MEDIASUBTYPE_IEEE_FLOAT))
++        {
++            if (FAILED(hr = IWMReaderAdvanced_SetReadStreamSamples(reader_advanced, i + 1, TRUE)))
++                WARN("Failed to set compressed reading for stream %u, hr %#lx\n", i, hr);
++        }
++
+         if (FAILED(hr = IPin_NewSegment(stream->source.pin.peer, 0, 0, 1)))
+         {
+             WARN("Failed to start stream %u new segment, hr %#lx\n", i, hr);
+@@ -616,6 +630,12 @@ static HRESULT WINAPI asf_reader_DecideBufferSize(struct strmbase_source *iface,
          WAVEFORMATEX *format = (WAVEFORMATEX *)stream->source.pin.mt.pbFormat;
          buffer_size = format->nAvgBytesPerSec;
      }
 +    else if (IsEqualGUID(&stream->source.pin.mt.formattype, &FORMAT_WaveFormatEx))
 +    {
-+        /* Compressed audio (e.g. WMA Pro). Use nBlockAlign as the buffer size. */
 +        WAVEFORMATEX *format = (WAVEFORMATEX *)stream->source.pin.mt.pbFormat;
 +        if (format->nBlockAlign > buffer_size)
 +            buffer_size = format->nBlockAlign;
@@ -39,10 +59,10 @@ index 1c24a1f..1dfbcc0 100644
  out:
      IVMRSurfaceAllocatorNotify9_Release(notify);
 diff --git a/dlls/quartz/vmr9.c b/dlls/quartz/vmr9.c
-index 611a125..f2d871e 100644
+index 611a125..f34d9ec 100644
 --- a/dlls/quartz/vmr9.c
 +++ b/dlls/quartz/vmr9.c
-@@ -1518,12 +1518,12 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
+@@ -1518,12 +1518,7 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
              allocinfo->dwFlags, allocinfo->dwWidth, allocinfo->dwHeight,
              allocinfo->Format, allocinfo->Format, allocinfo->Pool, allocinfo->MinBuffers);
  
@@ -52,21 +72,15 @@ index 611a125..f2d871e 100644
 -        WARN("Invalid flags specified; returning E_INVALIDARG.\n");
 -        return E_INVALIDARG;
 -    }
-+    /* VMR9AllocFlag_3DRenderTarget, TextureSurface and OffscreenSurface are
-+     * documented as mutually exclusive. However, real-world applications
-+     * (notably KiriKiri-based Visual Novels) pass TextureSurface together
-+     * with OffscreenSurface. The combination is now honoured by allocating
-+     * a texture surface. The branches below use bitwise tests so additional
-+     * bits in dwFlags no longer cause the request to fall through to E_NOTIMPL. */
++    /* Allow TextureSurface | OffscreenSurface combination. Use bitwise tests. */
  
      if (!allocinfo->Format)
      {
-@@ -1550,17 +1550,18 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
+@@ -1550,17 +1545,17 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
          return VFW_E_WRONG_STATE;
      }
  
 -    if (allocinfo->dwFlags == VMR9AllocFlag_OffscreenSurface)
-+    /* Allocation priority: 3DRenderTarget > TextureSurface > OffscreenSurface. */
 +    if (allocinfo->dwFlags & VMR9AllocFlag_3DRenderTarget)
      {
          for (i = 0; i < *numbuffers; ++i)
@@ -85,7 +99,7 @@ index 611a125..f2d871e 100644
      {
          for (i = 0; i < *numbuffers; ++i)
          {
-@@ -1574,20 +1575,21 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
+@@ -1574,20 +1569,21 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
              IDirect3DTexture9_Release(texture);
          }
      }
@@ -113,71 +127,3 @@ index 611a125..f2d871e 100644
      }
  
      if (FAILED(hr))
-diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
-index 38971f2..40a0ce8 100644
---- a/dlls/winegstreamer/quartz_parser.c
-+++ b/dlls/winegstreamer/quartz_parser.c
-@@ -1361,7 +1361,11 @@ static void send_buffer(struct parser_source *pin, struct parser *filter, const
-         pin->need_segment = false;
-     }
- 
--    if (IsEqualGUID(&pin->pin.pin.mt.formattype, &FORMAT_WaveFormatEx)
-+    /* When output_compressed is true the GStreamer pipeline delivers complete
-+     * compressed frames. Each frame must be delivered in a single IMediaSample;
-+     * splitting it causes the decoder to reject fragments. */
-+    if (!filter->output_compressed
-+            && IsEqualGUID(&pin->pin.pin.mt.formattype, &FORMAT_WaveFormatEx)
-             && (IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_PCM)
-             || IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_IEEE_FLOAT)))
-     {
-@@ -2290,6 +2294,7 @@ static HRESULT WINAPI GSTOutPin_DecideBufferSize(struct strmbase_source *iface,
-         IMemAllocator *allocator, ALLOCATOR_PROPERTIES *props)
- {
-     struct parser_source *pin = impl_source_from_IPin(&iface->pin.IPin_iface);
-+    struct parser *filter = impl_from_strmbase_filter(pin->pin.pin.filter);
-     unsigned int buffer_count = 1;
-     unsigned int buffer_size = 16384;
-     ALLOCATOR_PROPERTIES ret_props;
-@@ -2320,6 +2325,13 @@ static HRESULT WINAPI GSTOutPin_DecideBufferSize(struct strmbase_source *iface,
-         buffer_count = 3;
-     }
- 
-+    /* When output_compressed is true each IMediaSample must be large enough to
-+     * hold a complete compressed frame. For WMA Pro the frame size is block_align. */
-+    if (filter->output_compressed
-+            && pin->current_format.major_type == WG_MAJOR_TYPE_AUDIO_WMA
-+            && pin->current_format.u.audio.block_align > buffer_size)
-+        buffer_size = pin->current_format.u.audio.block_align;
-+
-     /* We do need to drop any buffers that might have been sent with the old
-      * caps, but this will be handled in parser_init_stream(). */
- 
-diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
-index 6a800e4..2780c9c 100644
---- a/dlls/winegstreamer/wm_reader.c
-+++ b/dlls/winegstreamer/wm_reader.c
-@@ -1786,7 +1786,23 @@ static HRESULT wm_reader_read_stream_sample(struct wm_reader *reader, struct wg_
- 
-     capacity = buffer->size - stream->current_buffer_offset;
-     if (stream->format.major_type == WG_MAJOR_TYPE_AUDIO)
--        capacity = min(capacity, 16384);
-+    {
-+        DWORD max_sample_size = 16384;
-+        /* Each IMediaSample must contain a complete compressed frame for the
-+         * downstream decoder to accept it. For WMA Pro the frame size is
-+         * nBlockAlign (e.g. 20434 bytes for 440 kbps 44.1 kHz stereo).
-+         * The default cap of 16384 is too small for high-bitrate WMA Pro,
-+         * causing frames to be split across IMediaSamples which the decoder
-+         * rejects with "Input packet too small".
-+         *
-+         * This applies regardless of read_compressed because even when the
-+         * IWMReader is configured for uncompressed output, it may still
-+         * deliver compressed frames when it cannot decode the format
-+         * internally (relying on an external DMO decoder instead). */
-+        if (stream->format.u.audio.block_align > max_sample_size)
-+            max_sample_size = stream->format.u.audio.block_align;
-+        capacity = min(capacity, max_sample_size);
-+    }
- 
-     if (FAILED(hr = wm_stream_allocate_sample(stream, capacity, sample)))
-     {
