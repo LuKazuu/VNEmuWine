@@ -1,10 +1,8 @@
 diff --git a/dlls/quartz/tests/vmr9.c b/dlls/quartz/tests/vmr9.c
-old mode 100644
-new mode 100755
-index 1c24a1f..e1bc3cc
+index 1c24a1f..134af95 100644
 --- a/dlls/quartz/tests/vmr9.c
 +++ b/dlls/quartz/tests/vmr9.c
-@@ -2943,9 +2943,22 @@ static void test_allocate_surface_helper(void)
+@@ -2943,9 +2943,19 @@ static void test_allocate_surface_helper(void)
      info.Format = D3DFMT_A8R8G8B8;
      info.dwFlags = VMR9AllocFlag_OffscreenSurface | VMR9AllocFlag_TextureSurface;
      count = 1;
@@ -16,10 +14,7 @@ index 1c24a1f..e1bc3cc
 +    ok(!!surfaces[0], "Surface 0 was not allocated.\n");
 +    /* When TextureSurface and OffscreenSurface are requested together the
 +     * allocator must return a texture surface, which can be used both as a
-+     * texture and as an offscreen plain surface. This is required by
-+     * real-world applications (e.g. custom VMR9 allocator/presenters used
-+     * by Visual Novel engines) that request YUV surfaces (NV12, YV12, etc.)
-+     * for shader-based colour conversion. */
++     * texture and as an offscreen plain surface. */
 +    hr = IDirect3DSurface9_GetContainer(surfaces[0], &IID_IDirect3DTexture9, (void **)&container);
 +    ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
 +    IDirect3DTexture9_Release(container);
@@ -29,12 +24,10 @@ index 1c24a1f..e1bc3cc
  out:
      IVMRSurfaceAllocatorNotify9_Release(notify);
 diff --git a/dlls/quartz/vmr9.c b/dlls/quartz/vmr9.c
-old mode 100644
-new mode 100755
-index 611a125..79419f8
+index 611a125..332f57d 100644
 --- a/dlls/quartz/vmr9.c
 +++ b/dlls/quartz/vmr9.c
-@@ -1518,12 +1518,33 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
+@@ -1518,12 +1518,24 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
              allocinfo->dwFlags, allocinfo->dwWidth, allocinfo->dwHeight,
              allocinfo->Format, allocinfo->Format, allocinfo->Pool, allocinfo->MinBuffers);
  
@@ -46,44 +39,33 @@ index 611a125..79419f8
 -    }
 +    /* VMR9AllocFlag_3DRenderTarget, VMR9AllocFlag_TextureSurface and
 +     * VMR9AllocFlag_OffscreenSurface are documented as mutually exclusive
-+     * in the VMR9 SDK, and the previous implementation rejected the
++     * in the VMR9 SDK. The previous implementation rejected the
 +     * TextureSurface | OffscreenSurface combination with E_INVALIDARG.
 +     *
 +     * However, real-world applications - notably the custom VMR9
 +     * allocator/presenters used by Visual Novel engines such as KiriKiri -
 +     * routinely pass VMR9AllocFlag_TextureSurface together with
-+     * VMR9AllocFlag_OffscreenSurface when allocating YUV video surfaces
-+     * (e.g. NV12, YV12). They rely on the allocator returning a texture
-+     * surface so the surface can be sampled by a pixel shader for
-+     * YUV-to-RGB colour conversion.
++     * VMR9AllocFlag_OffscreenSurface when allocating YUV video surfaces.
++     * Rejecting the combination forced the application to fall back to a
++     * plain offscreen surface, which cannot be sampled by a pixel shader,
++     * breaking shader-based YUV-to-RGB colour conversion.
 +     *
-+     * Rejecting that combination forced such applications to fall back to
-+     * a plain offscreen surface, which cannot be bound as a texture. As a
-+     * result the downstream rendering pipeline raised an exception and the
-+     * video never played.
-+     *
-+     * To fix this, the combination is now honoured by allocating a texture
-+     * surface (its top-level surface can be retrieved via
-+     * IDirect3DBaseTexture9::GetSurfaceLevel and used as either a texture
-+     * or an offscreen plain surface, so it is a strict superset of either
-+     * flag requested alone). The branches below use bitwise tests instead
-+     * of equality so additional bits in dwFlags (e.g.
-+     * VMR9AllocFlag_RGBDynamicSwitch, VMR9AllocFlag_DXVATarget) no longer
-+     * cause the request to be silently dropped through to the
-+     * "Unhandled flags" fallback. */
++     * The combination is now honoured by allocating a texture surface (its
++     * top-level surface can be retrieved via GetSurfaceLevel and used as
++     * either a texture or an offscreen plain surface). The branches below
++     * use bitwise tests instead of equality so additional bits in dwFlags
++     * no longer cause the request to fall through to E_NOTIMPL. */
  
      if (!allocinfo->Format)
      {
-@@ -1550,17 +1571,22 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
+@@ -1550,17 +1562,20 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
          return VFW_E_WRONG_STATE;
      }
  
 -    if (allocinfo->dwFlags == VMR9AllocFlag_OffscreenSurface)
-+    /* Allocation strategy: priority is 3DRenderTarget > TextureSurface >
-+     * OffscreenSurface. This means a request that combines TextureSurface
-+     * with OffscreenSurface is satisfied as a texture, which is the more
-+     * capable surface type and what the application actually wants when
-+     * both flags are passed. */
++    /* Allocation priority: 3DRenderTarget > TextureSurface > OffscreenSurface.
++     * A combined TextureSurface | OffscreenSurface request is satisfied as a
++     * texture, which is the more capable surface type. */
 +    if (allocinfo->dwFlags & VMR9AllocFlag_3DRenderTarget)
      {
          for (i = 0; i < *numbuffers; ++i)
@@ -102,7 +84,7 @@ index 611a125..79419f8
      {
          for (i = 0; i < *numbuffers; ++i)
          {
-@@ -1574,20 +1600,21 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
+@@ -1574,20 +1589,21 @@ static HRESULT WINAPI VMR9SurfaceAllocatorNotify_AllocateSurfaceHelper(IVMRSurfa
              IDirect3DTexture9_Release(texture);
          }
      }
@@ -131,41 +113,58 @@ index 611a125..79419f8
  
      if (FAILED(hr))
 diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
-old mode 100644
-new mode 100755
-index 38971f2..21549e1
+index 38971f2..f49e96c 100644
 --- a/dlls/winegstreamer/quartz_parser.c
 +++ b/dlls/winegstreamer/quartz_parser.c
-@@ -2312,6 +2312,32 @@ static HRESULT WINAPI GSTOutPin_DecideBufferSize(struct strmbase_source *iface,
-         WAVEFORMATEX *format = (WAVEFORMATEX *)pin->pin.pin.mt.pbFormat;
-         buffer_size = format->nAvgBytesPerSec;
+@@ -1361,7 +1361,18 @@ static void send_buffer(struct parser_source *pin, struct parser *filter, const
+         pin->need_segment = false;
      }
-+    else if (IsEqualGUID(&pin->pin.pin.mt.formattype, &FORMAT_WaveFormatEx))
-+    {
-+        /* Compressed audio (e.g. WMA Pro, WMA Lossless). The downstream
-+         * decoder expects each IMediaSample to contain a complete,
-+         * unfragmented compressed frame. For WMA Pro the frame size is
-+         * carried in nBlockAlign; delivering a sample that is smaller
-+         * than nBlockAlign causes the decoder to reject it with
-+         * "Input packet too small", which in turn causes applications
-+         * that monitor the audio path (notably KiriKiri-based Visual
-+         * Novels using custom VMR9 allocator/presenters) to abort video
-+         * playback entirely via an EC_USER+1 event.
-+         *
-+         * GStreamer's ASF demuxer already delivers complete frames as
-+         * GstBuffers, but the default buffer_size of 16384 is smaller
-+         * than nBlockAlign for high-bitrate WMA Pro streams (e.g.
-+         * 20434 bytes for 440 kbps 44.1 kHz stereo). When that happens,
-+         * send_buffer() in quartz_parser.c splits the GStreamer buffer
-+         * across two IMediaSamples, fragmenting the compressed frame.
-+         *
-+         * Fix: size the allocator to at least nBlockAlign so that a
-+         * complete compressed frame always fits in a single
-+         * IMediaSample. */
-+        WAVEFORMATEX *format = (WAVEFORMATEX *)pin->pin.pin.mt.pbFormat;
-+        if (format->nBlockAlign > buffer_size)
-+            buffer_size = format->nBlockAlign;
-+    }
-     else if (IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_MPEG1AudioPayload)
-             || IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_MP3))
+ 
+-    if (IsEqualGUID(&pin->pin.pin.mt.formattype, &FORMAT_WaveFormatEx)
++    /* When output_compressed is true the GStreamer pipeline delivers complete
++     * compressed frames (one media object per GstBuffer). Each frame must be
++     * delivered to the downstream DMO in a single IMediaSample; splitting it
++     * (as the PCM path below does) causes the decoder to reject the fragments
++     * with "Input packet too small".
++     *
++     * The PCM path is also incorrectly taken when the pin's media type still
++     * says PCM from a previous probe (output_compressed=0) even though the
++     * current pipeline outputs compressed data. Guard against that by checking
++     * output_compressed here. */
++    if (!filter->output_compressed
++            && IsEqualGUID(&pin->pin.pin.mt.formattype, &FORMAT_WaveFormatEx)
+             && (IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_PCM)
+             || IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_IEEE_FLOAT)))
      {
+@@ -2290,6 +2301,7 @@ static HRESULT WINAPI GSTOutPin_DecideBufferSize(struct strmbase_source *iface,
+         IMemAllocator *allocator, ALLOCATOR_PROPERTIES *props)
+ {
+     struct parser_source *pin = impl_source_from_IPin(&iface->pin.IPin_iface);
++    struct parser *filter = impl_from_strmbase_filter(pin->pin.pin.filter);
+     unsigned int buffer_count = 1;
+     unsigned int buffer_size = 16384;
+     ALLOCATOR_PROPERTIES ret_props;
+@@ -2320,6 +2332,23 @@ static HRESULT WINAPI GSTOutPin_DecideBufferSize(struct strmbase_source *iface,
+         buffer_count = 3;
+     }
+ 
++    /* When output_compressed is true each IMediaSample must be large enough to
++     * hold a complete compressed frame. For WMA Pro the frame size is the
++     * nBlockAlign field from the stream's WAVEFORMATEX (e.g. 20434 bytes for
++     * 440 kbps 44.1 kHz stereo). The default buffer_size of 16384 is too small
++     * for high-bitrate WMA Pro streams, and send_buffer() — which no longer
++     * splits compressed frames (see the output_compressed guard above) — would
++     * overflow the IMediaSample.
++     *
++     * Use the block_align from the pin's current_format (the wg_format tracked
++     * by the GStreamer parser), which reflects the actual compressed frame
++     * size even when the pin's DirectShow media type hasn't been updated from
++     * a previous probe. */
++    if (filter->output_compressed
++            && pin->current_format.major_type == WG_MAJOR_TYPE_AUDIO_WMA
++            && pin->current_format.u.audio.block_align > buffer_size)
++        buffer_size = pin->current_format.u.audio.block_align;
++
+     /* We do need to drop any buffers that might have been sent with the old
+      * caps, but this will be handled in parser_init_stream(). */
+ 
