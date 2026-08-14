@@ -1,8 +1,8 @@
 diff --git a/dlls/quartz/tests/vmr9.c b/dlls/quartz/tests/vmr9.c
-index 1c24a1f..134af95 100644
+index 1c24a1f..00049bb 100644
 --- a/dlls/quartz/tests/vmr9.c
 +++ b/dlls/quartz/tests/vmr9.c
-@@ -2943,9 +2943,19 @@ static void test_allocate_surface_helper(void)
+@@ -2943,9 +2943,18 @@ static void test_allocate_surface_helper(void)
      info.Format = D3DFMT_A8R8G8B8;
      info.dwFlags = VMR9AllocFlag_OffscreenSurface | VMR9AllocFlag_TextureSurface;
      count = 1;
@@ -13,8 +13,7 @@ index 1c24a1f..134af95 100644
      ok(count == 1, "Got count %lu.\n", count);
 +    ok(!!surfaces[0], "Surface 0 was not allocated.\n");
 +    /* When TextureSurface and OffscreenSurface are requested together the
-+     * allocator must return a texture surface, which can be used both as a
-+     * texture and as an offscreen plain surface. */
++     * allocator must return a texture surface. */
 +    hr = IDirect3DSurface9_GetContainer(surfaces[0], &IID_IDirect3DTexture9, (void **)&container);
 +    ok(hr == D3D_OK, "Got hr %#lx.\n", hr);
 +    IDirect3DTexture9_Release(container);
@@ -113,10 +112,10 @@ index 611a125..332f57d 100644
  
      if (FAILED(hr))
 diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
-index 38971f2..f49e96c 100644
+index 38971f2..9f7a38d 100644
 --- a/dlls/winegstreamer/quartz_parser.c
 +++ b/dlls/winegstreamer/quartz_parser.c
-@@ -1361,7 +1361,18 @@ static void send_buffer(struct parser_source *pin, struct parser *filter, const
+@@ -1361,7 +1361,13 @@ static void send_buffer(struct parser_source *pin, struct parser *filter, const
          pin->need_segment = false;
      }
  
@@ -125,18 +124,13 @@ index 38971f2..f49e96c 100644
 +     * compressed frames (one media object per GstBuffer). Each frame must be
 +     * delivered to the downstream DMO in a single IMediaSample; splitting it
 +     * (as the PCM path below does) causes the decoder to reject the fragments
-+     * with "Input packet too small".
-+     *
-+     * The PCM path is also incorrectly taken when the pin's media type still
-+     * says PCM from a previous probe (output_compressed=0) even though the
-+     * current pipeline outputs compressed data. Guard against that by checking
-+     * output_compressed here. */
++     * with "Input packet too small". */
 +    if (!filter->output_compressed
 +            && IsEqualGUID(&pin->pin.pin.mt.formattype, &FORMAT_WaveFormatEx)
              && (IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_PCM)
              || IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_IEEE_FLOAT)))
      {
-@@ -2290,6 +2301,7 @@ static HRESULT WINAPI GSTOutPin_DecideBufferSize(struct strmbase_source *iface,
+@@ -2290,6 +2296,7 @@ static HRESULT WINAPI GSTOutPin_DecideBufferSize(struct strmbase_source *iface,
          IMemAllocator *allocator, ALLOCATOR_PROPERTIES *props)
  {
      struct parser_source *pin = impl_source_from_IPin(&iface->pin.IPin_iface);
@@ -144,22 +138,15 @@ index 38971f2..f49e96c 100644
      unsigned int buffer_count = 1;
      unsigned int buffer_size = 16384;
      ALLOCATOR_PROPERTIES ret_props;
-@@ -2320,6 +2332,23 @@ static HRESULT WINAPI GSTOutPin_DecideBufferSize(struct strmbase_source *iface,
+@@ -2320,6 +2327,16 @@ static HRESULT WINAPI GSTOutPin_DecideBufferSize(struct strmbase_source *iface,
          buffer_count = 3;
      }
  
 +    /* When output_compressed is true each IMediaSample must be large enough to
 +     * hold a complete compressed frame. For WMA Pro the frame size is the
-+     * nBlockAlign field from the stream's WAVEFORMATEX (e.g. 20434 bytes for
-+     * 440 kbps 44.1 kHz stereo). The default buffer_size of 16384 is too small
-+     * for high-bitrate WMA Pro streams, and send_buffer() — which no longer
-+     * splits compressed frames (see the output_compressed guard above) — would
-+     * overflow the IMediaSample.
-+     *
-+     * Use the block_align from the pin's current_format (the wg_format tracked
-+     * by the GStreamer parser), which reflects the actual compressed frame
-+     * size even when the pin's DirectShow media type hasn't been updated from
-+     * a previous probe. */
++     * nBlockAlign field (e.g. 20434 bytes for 440 kbps 44.1 kHz stereo).
++     * Use block_align from the pin's current_format (wg_format), which
++     * reflects the actual compressed frame size. */
 +    if (filter->output_compressed
 +            && pin->current_format.major_type == WG_MAJOR_TYPE_AUDIO_WMA
 +            && pin->current_format.u.audio.block_align > buffer_size)
@@ -168,3 +155,30 @@ index 38971f2..f49e96c 100644
      /* We do need to drop any buffers that might have been sent with the old
       * caps, but this will be handled in parser_init_stream(). */
  
+diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
+index 6a800e4..f041953 100644
+--- a/dlls/winegstreamer/wm_reader.c
++++ b/dlls/winegstreamer/wm_reader.c
+@@ -1786,7 +1786,21 @@ static HRESULT wm_reader_read_stream_sample(struct wm_reader *reader, struct wg_
+ 
+     capacity = buffer->size - stream->current_buffer_offset;
+     if (stream->format.major_type == WG_MAJOR_TYPE_AUDIO)
+-        capacity = min(capacity, 16384);
++    {
++        DWORD max_sample_size = 16384;
++        /* When reading compressed audio (e.g. WMA Pro) each IMediaSample must
++         * contain a complete compressed frame. The frame size is the
++         * nBlockAlign field (e.g. 20434 bytes for 440 kbps 44.1 kHz stereo).
++         * The default cap of 16384 is too small for high-bitrate WMA Pro
++         * streams, causing frames to be split across IMediaSamples which the
++         * downstream decoder rejects with "Input packet too small". Use
++         * block_align as the cap when reading compressed WMA audio. */
++        if (stream->read_compressed
++                && stream->format.major_type == WG_MAJOR_TYPE_AUDIO_WMA
++                && stream->format.u.audio.block_align > max_sample_size)
++            max_sample_size = stream->format.u.audio.block_align;
++        capacity = min(capacity, max_sample_size);
++    }
+ 
+     if (FAILED(hr = wm_stream_allocate_sample(stream, capacity, sample)))
+     {
