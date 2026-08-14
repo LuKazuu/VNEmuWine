@@ -108,6 +108,41 @@ index 611a125..f34d9ec 100644
      }
  
      if (FAILED(hr))
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+index 38971f2..711272c 100644
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -1507,6 +1507,15 @@ static DWORD CALLBACK stream_thread(void *arg)
+             continue;
+         }
+ 
++        /* wg_parser_stream_get_buffer() blocks until GStreamer produces the
++         * next buffer for this stream, and send_buffer() delivers it downstream
++         * (which can itself block on the renderer's clock). Do not hold
++         * pin->flushing_cs across these calls: the audio and video pins of a
++         * single source filter can stall independently, and holding the lock
++         * while blocked deadlocks the other stream's thread (video freezes,
++         * audio loops). */
++        LeaveCriticalSection(&pin->flushing_cs);
++
+         if (wg_parser_stream_get_buffer(filter->wg_parser, pin->wg_stream, &buffer))
+         {
+             send_buffer(pin, filter, &buffer);
+@@ -1514,11 +1523,11 @@ static DWORD CALLBACK stream_thread(void *arg)
+         else
+         {
+             TRACE("Got EOS.\n");
+-            IPin_EndOfStream(pin->pin.pin.peer);
++            EnterCriticalSection(&pin->flushing_cs);
+             pin->eos = true;
++            LeaveCriticalSection(&pin->flushing_cs);
++            IPin_EndOfStream(pin->pin.pin.peer);
+         }
+-
+-        LeaveCriticalSection(&pin->flushing_cs);
+     }
+ 
+     TRACE("Streaming stopped; exiting.\n");
 diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
 index 6a800e4..7158719 100644
 --- a/dlls/winegstreamer/wm_reader.c
