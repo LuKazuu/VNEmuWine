@@ -108,43 +108,8 @@ index 611a125..f34d9ec 100644
      }
  
      if (FAILED(hr))
-diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
-index 38971f2..711272c 100644
---- a/dlls/winegstreamer/quartz_parser.c
-+++ b/dlls/winegstreamer/quartz_parser.c
-@@ -1507,6 +1507,15 @@ static DWORD CALLBACK stream_thread(void *arg)
-             continue;
-         }
- 
-+        /* wg_parser_stream_get_buffer() blocks until GStreamer produces the
-+         * next buffer for this stream, and send_buffer() delivers it downstream
-+         * (which can itself block on the renderer's clock). Do not hold
-+         * pin->flushing_cs across these calls: the audio and video pins of a
-+         * single source filter can stall independently, and holding the lock
-+         * while blocked deadlocks the other stream's thread (video freezes,
-+         * audio loops). */
-+        LeaveCriticalSection(&pin->flushing_cs);
-+
-         if (wg_parser_stream_get_buffer(filter->wg_parser, pin->wg_stream, &buffer))
-         {
-             send_buffer(pin, filter, &buffer);
-@@ -1514,11 +1523,11 @@ static DWORD CALLBACK stream_thread(void *arg)
-         else
-         {
-             TRACE("Got EOS.\n");
--            IPin_EndOfStream(pin->pin.pin.peer);
-+            EnterCriticalSection(&pin->flushing_cs);
-             pin->eos = true;
-+            LeaveCriticalSection(&pin->flushing_cs);
-+            IPin_EndOfStream(pin->pin.pin.peer);
-         }
--
--        LeaveCriticalSection(&pin->flushing_cs);
-     }
- 
-     TRACE("Streaming stopped; exiting.\n");
 diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
-index 6a800e4..7158719 100644
+index 6a800e4..2dd35c9 100644
 --- a/dlls/winegstreamer/wm_reader.c
 +++ b/dlls/winegstreamer/wm_reader.c
 @@ -1785,7 +1785,13 @@ static HRESULT wm_reader_read_stream_sample(struct wm_reader *reader, struct wg_
@@ -162,41 +127,3 @@ index 6a800e4..7158719 100644
          capacity = min(capacity, 16384);
  
      if (FAILED(hr = wm_stream_allocate_sample(stream, capacity, sample)))
-@@ -2069,19 +2075,34 @@ static HRESULT WINAPI reader_GetNextSample(IWMSyncReader2 *iface,
-     while (hr == S_FALSE)
-     {
-         struct wg_parser_buffer wg_buffer;
-+        bool have_buffer = false;
- 
-         if (stream && stream->current_buffer.size)
-         {
-             TRACE("Reusing buffer for stream %p.\n", stream);
-             wg_buffer = stream->current_buffer;
-+            have_buffer = true;
-             hr = S_OK;
-         }
--        else if (!wg_parser_stream_get_buffer(reader->wg_parser, stream ? stream->wg_stream : 0, &wg_buffer))
-+        else
-         {
--            hr = NS_E_NO_MORE_SAMPLES;
-+            /* wg_parser_stream_get_buffer() blocks until GStreamer produces
-+             * the next decoded buffer for this stream. Do not hold reader->cs
-+             * while blocking: the audio and video streaming threads share this
-+             * single lock, so if one stream stalls the other thread starves
-+             * and the whole graph deadlocks (video freezes, audio loops). */
-+            LeaveCriticalSection(&reader->cs);
-+
-+            if (!wg_parser_stream_get_buffer(reader->wg_parser, stream ? stream->wg_stream : 0, &wg_buffer))
-+                hr = NS_E_NO_MORE_SAMPLES;
-+            else
-+                have_buffer = true;
-+
-+            EnterCriticalSection(&reader->cs);
-         }
- 
--        if (SUCCEEDED(hr) && SUCCEEDED(hr = wm_reader_read_stream_sample(reader, &wg_buffer, sample, pts, duration, flags)))
-+        if (SUCCEEDED(hr) && have_buffer
-+                && SUCCEEDED(hr = wm_reader_read_stream_sample(reader, &wg_buffer, sample, pts, duration, flags)))
-             stream_number = wg_buffer.stream + 1;
-     }
- 
