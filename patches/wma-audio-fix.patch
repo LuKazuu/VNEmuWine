@@ -1,0 +1,38 @@
+diff --git a/dlls/qasf/asfreader.c b/dlls/qasf/asfreader.c
+index 0bebfa9..ae7d232 100644
+--- a/dlls/qasf/asfreader.c
++++ b/dlls/qasf/asfreader.c
+@@ -616,6 +616,14 @@ static HRESULT WINAPI asf_reader_DecideBufferSize(struct strmbase_source *iface,
+         WAVEFORMATEX *format = (WAVEFORMATEX *)stream->source.pin.mt.pbFormat;
+         buffer_size = format->nAvgBytesPerSec;
+     }
++    else if (IsEqualGUID(&stream->source.pin.mt.formattype, &FORMAT_WaveFormatEx))
++    {
++        /* Compressed audio (e.g. WMA Pro): make each sample big enough for a
++         * full compressed frame (nBlockAlign). */
++        WAVEFORMATEX *format = (WAVEFORMATEX *)stream->source.pin.mt.pbFormat;
++        if (format->nBlockAlign > buffer_size)
++            buffer_size = format->nBlockAlign;
++    }
+ 
+     req_props->cBuffers = max(req_props->cBuffers, 1);
+     req_props->cbBuffer = max(req_props->cbBuffer, buffer_size);
+diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
+index 6a800e4..2dd35c9 100644
+--- a/dlls/winegstreamer/wm_reader.c
++++ b/dlls/winegstreamer/wm_reader.c
+@@ -1785,7 +1785,13 @@ static HRESULT wm_reader_read_stream_sample(struct wm_reader *reader, struct wg_
+     TRACE("Got buffer for '%s' stream %p.\n", get_major_type_string(stream->format.major_type), stream);
+ 
+     capacity = buffer->size - stream->current_buffer_offset;
+-    if (stream->format.major_type == WG_MAJOR_TYPE_AUDIO)
++    /* Only split uncompressed (PCM) audio. Compressed samples (e.g. WMA Pro)
++     * must be delivered as complete frames; splitting at 16384 bytes makes
++     * libav's WMA Pro decoder fail with "Input packet too small". Note that
++     * stream->format may still describe the decoded (PCM) format while
++     * read_compressed is set, because reinit_stream() does not refresh it.
++     * stream->read_compressed is therefore the authoritative flag here. */
++    if (!stream->read_compressed && stream->format.major_type == WG_MAJOR_TYPE_AUDIO)
+         capacity = min(capacity, 16384);
+ 
+     if (FAILED(hr = wm_stream_allocate_sample(stream, capacity, sample)))
