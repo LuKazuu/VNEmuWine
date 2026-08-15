@@ -1568,8 +1568,8 @@
      struct alpc_create_port_reply alpc_create_port_reply;
  };
  
--#define SERVER_PROTOCOL_VERSION 957
-+#define SERVER_PROTOCOL_VERSION 958
+-#define SERVER_PROTOCOL_VERSION 958
++#define SERVER_PROTOCOL_VERSION 959
  
  #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
 --- a/server/Makefile.in

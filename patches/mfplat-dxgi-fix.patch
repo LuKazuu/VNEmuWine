@@ -1,6 +1,8 @@
+diff --git a/dlls/mfplat/main.c b/dlls/mfplat/main.c
+index f0716cc..cfc831f 100644
 --- a/dlls/mfplat/main.c
 +++ b/dlls/mfplat/main.c
-@@ -9690,6 +9690,15 @@
+@@ -9690,6 +9690,15 @@ HRESULT WINAPI MFCreateDXGIDeviceManager(UINT *token, IMFDXGIDeviceManager **man
      if (!token || !manager)
          return E_POINTER;
  
@@ -15,3 +17,4 @@
 +
      if (!(object = calloc(1, sizeof(*object))))
          return E_OUTOFMEMORY;
+ 
