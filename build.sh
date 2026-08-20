@@ -46,7 +46,7 @@ TERMUX_PKG_MAINTAINER="@LuKazuu"
 TERMUX_PKG_VERSION="__WINE_VERSION__"
 TERMUX_PKG_SRCURL="https://github.com/wine-mirror/wine/archive/refs/tags/wine-${TERMUX_PKG_VERSION}.tar.gz"
 TERMUX_PKG_SHA256="__WINE_SHA256__"
-TERMUX_PKG_DEPENDS="fontconfig, freetype, krb5, libandroid-spawn, libc++, libgmp, libgnutls, libxcb, libxcomposite, libxcursor, libxfixes, libxrender, opengl, pulseaudio, sdl2, vulkan-loader, xorg-xrandr"
+TERMUX_PKG_DEPENDS="alsa-lib, alsa-plugins, fontconfig, freetype, krb5, libandroid-spawn, libc++, libgmp, libgnutls, libxcb, libxcomposite, libxcursor, libxfixes, libxrender, opengl, pulseaudio, sdl2, vulkan-loader, xorg-xrandr"
 TERMUX_PKG_BUILD_DEPENDS="libandroid-spawn-static, vulkan-loader-generic"
 TERMUX_PKG_ANTI_BUILD_DEPENDS="vulkan-loader"
 TERMUX_PKG_NO_STATICSPLIT=true
@@ -71,7 +71,7 @@ enable_tools=yes
 --with-wine-tools=$TERMUX_PKG_HOSTBUILD_DIR
 --enable-nls
 --disable-tests
---without-alsa
+--with-alsa
 --without-capi
 --without-coreaudio
 --without-cups
