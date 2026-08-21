@@ -13,9 +13,9 @@ on:
         required: true
         default: 'wine'
       wine_version:
-        description: 'Wine version (e.g. 11.14) — only used when component=wine'
+        description: 'Wine version (e.g. 11.16) — only used when component=wine'
         type: string
-        default: '11.15'
+        default: '11.16'
       fexcore_ref:
         description: 'FEX-Emu/FEX git ref. Default: main'
         type: string
