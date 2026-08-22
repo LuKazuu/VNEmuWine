@@ -1,0 +1,133 @@
+[PATCH] faudio: Ensure COM is initialized on the calling thread when
+ creating the WMA decoder.
+
+When IXAudio2::CreateSourceVoice is called with a WMA / xWMA audio
+format (FAUDIO_FORMAT_WMAUDIO2, WMAUDIO3, WMAUDIO_LOSSLESS, or
+XMAUDIO2), FAudio internally invokes FAudio_WMADEC_init, which in
+turn calls CoCreateInstance(&CLSID_CWMADecMediaObject, ...).
+
+FAudio's COM initialization in FAudio_PlatformAddRef() only calls
+CoInitialize(NULL) on the FIRST thread that calls it (i.e. the thread
+that happened to call XAudio2Create). Any other thread that later
+calls CreateSourceVoice with a WMA format has no COM apartment
+initialized, and the CoCreateInstance call fails with
+CO_E_NOTINITIALIZED ("apartment not initialised"). The voice creation
+fails silently (no "Created source voice:" trace), and the game's
+character voices never play, even though the BGM (which uses PCM and
+does not need the WMA decoder) works fine.
+
+This patch fixes the issue by ensuring COM is initialized on the
+calling thread before the CoCreateInstance call inside
+FAudio_WMADEC_init. CoInitialize(NULL) is idempotent (returns S_FALSE
+if the thread is already initialized in STA, RPC_E_CHANGED_MODE if it
+is in MTA), so this is safe to call unconditionally.
+
+The CoInitialize is balanced by a CoUninitialize in FAudio_WMADEC_free,
+but only when called from the same thread that performed the init, to
+avoid spurious "Mismatched CoUninitialize" errors when voices are
+created and destroyed on different threads.
+
+diff --git a/libs/faudio/src/FAudio_platform_win32_wmadec.c b/libs/faudio/src/FAudio_platform_win32_wmadec.c
+index 8d7b918..a820256 100644
+--- a/libs/faudio/src/FAudio_platform_win32_wmadec.c
++++ b/libs/faudio/src/FAudio_platform_win32_wmadec.c
+@@ -29,6 +29,8 @@ struct FAudioWMADEC
+ 	size_t input_pos;
+ 	size_t input_size;
+ 	bool eos;
++	bool co_initialized;        /* TRUE if we called CoInitialize() in _init */
++	DWORD co_init_thread_id;   /* thread that performed the CoInitialize() */
+ };
+ 
+ static void send_eos(struct FAudioWMADEC *decoder)
+@@ -258,6 +260,7 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
+ 	IMFMediaType *media_type;
+ 	IMFTransform *decoder;
+ 	HRESULT hr;
++	HRESULT co_hr;
+ 	UINT32 i, value;
+ 	GUID guid;
+ 
+@@ -266,6 +269,28 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
+ 	if (!(impl = voice->audio->pMalloc(sizeof(*impl)))) return -1;
+ 	FAudio_memset(impl, 0, sizeof(*impl));
+ 
++	/* Ensure COM is initialized on the calling thread before we attempt
++	 * to instantiate the WMA decoder.
++	 *
++	 * FAudio_PlatformAddRef() (called from FAudioCOMConstructWithCustomAllocatorEXT,
++	 * i.e. when XAudio2Create runs) only invokes CoInitialize(NULL) on the
++	 * FIRST thread that triggers it. Any subsequent thread that calls
++	 * CreateSourceVoice with a WMA / xWMA format reaches this point with
++	 * no apartment on the calling thread, and the CoCreateInstance() below
++	 * fails with CO_E_NOTINITIALIZED. The voice creation then silently
++	 * fails and the game's character voices never play.
++	 *
++	 * CoInitialize(NULL) is idempotent:
++	 *   S_OK               -> we just initialized STA on this thread
++	 *   S_FALSE            -> thread already had STA, we AddRef'd it
++	 *   RPC_E_CHANGED_MODE -> thread is in MTA, use the existing apartment
++	 * In all three cases the thread has COM available for the
++	 * CoCreateInstance() call below.
++	 */
++	co_hr = CoInitialize(NULL);
++	impl->co_initialized = (co_hr == S_OK || co_hr == S_FALSE);
++	impl->co_init_thread_id = GetCurrentThreadId();
++
+ 	hr = CoCreateInstance(
+ 		&CLSID_CWMADecMediaObject,
+ 		0,
+@@ -275,6 +300,9 @@ uint32_t FAudio_WMADEC_init(FAudioSourceVoice *voice, uint32_t type)
+ 	);
+ 	if (FAILED(hr))
+ 	{
++		/* Balance the CoInitialize() above on failure. */
++		if (impl->co_initialized)
++			CoUninitialize();
+ 		voice->audio->pFree(impl->output_buf);
+ 		return -2;
+ 	}
+@@ -557,6 +585,8 @@ void FAudio_WMADEC_free(FAudioSourceVoice *voice)
+ {
+ 	struct FAudioWMADEC *impl = voice->src.wmadec;
+ 	HRESULT hr;
++	bool need_co_uninit;
++	DWORD current_thread = GetCurrentThreadId();
+ 
+ 	LOG_FUNC_ENTER(voice->audio)
+ 	FAudio_PlatformLockMutex(voice->audio->sourceLock);
+@@ -578,12 +608,34 @@ void FAudio_WMADEC_free(FAudioSourceVoice *voice)
+ 	if (impl->output_sample) IMFSample_Release(impl->output_sample);
+ 	IMFTransform_Release(impl->decoder);
+ 	voice->audio->pFree(impl->output_buf);
++
++	/* Save the COM bookkeeping before freeing impl. We need to call
++	 * CoUninitialize() AFTER releasing the IMFTransform, but impl is
++	 * about to be freed by pFree(voice->src.wmadec) below. */
++	need_co_uninit = impl->co_initialized &&
++	                 impl->co_init_thread_id == current_thread;
++
+ 	voice->audio->pFree(voice->src.wmadec);
+ 	voice->src.wmadec = NULL;
+ 	voice->src.decode = NULL;
+ 
+ 	FAudio_PlatformUnlockMutex(voice->audio->sourceLock);
+ 	LOG_MUTEX_UNLOCK(voice->audio, voice->audio->sourceLock)
++
++	/* Balance the CoInitialize() performed in FAudio_WMADEC_init.
++	 *
++	 * CoInitialize() / CoUninitialize() are per-thread refcounted. We
++	 * only call CoUninitialize() from the SAME thread that called
++	 * CoInitialize(); otherwise we would either decrement the wrong
++	 * thread's refcount (a no-op that leaks the init thread's
++	 * apartment) or trigger a "Mismatched CoUninitialize" error. If
++	 * the voice is destroyed from a different thread, the init
++	 * thread's apartment will be cleaned up automatically when that
++	 * thread exits.
++	 */
++	if (need_co_uninit)
++		CoUninitialize();
++
+ 	LOG_FUNC_EXIT(voice->audio)
+ }
+ 
