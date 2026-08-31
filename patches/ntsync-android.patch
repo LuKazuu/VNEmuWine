@@ -55,7 +55,7 @@ index 1629ee6..b285590 100644
          }
      }
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index 0127a05..73737c6 100644
+index 0127a05..b4c706b 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
 @@ -310,21 +310,34 @@ static unsigned int validate_open_object_attributes( const OBJECT_ATTRIBUTES *at
@@ -200,11 +200,11 @@ index 0127a05..73737c6 100644
      args.owner = GetCurrentThreadId();
      args.index = ~0u;
 -    args.alert = alert_fd;
--
--    if (type != WaitAll || count == 1) request = NTSYNC_IOC_WAIT_ANY;
--    else request = NTSYNC_IOC_WAIT_ALL;
 +    args.alert = (uint32_t)alert_fd;
  
+-    if (type != WaitAll || count == 1) request = NTSYNC_IOC_WAIT_ANY;
+-    else request = NTSYNC_IOC_WAIT_ALL;
+-
 -    do { ret = ioctl( device, request, &args ); }
 -    while (ret < 0 && errno == EINTR);
 +    do {
@@ -267,8 +267,49 @@ index 0127a05..73737c6 100644
              sync->access = reply->access;
              sync->type = reply->type;
              sync->closed = 0;
+@@ -884,8 +918,20 @@ static int get_inproc_alert_fd(void)
+         {
+             if (!server_call_unlocked( req ))
+             {
+-                data->alert_fd = fd = wine_server_receive_fd( &token );
+-                assert( token == reply->handle );
++                if (reply->ntsync_handle)
++                {
++                    /* Userspace ntsync (ntsync-android): the u32 alert handle
++                     * is in the reply, no SCM_RIGHTS fd passing. Store it as
++                     * the alert "fd" (it's actually a u32 ntsync-android handle
++                     * that linux_wait_objs passes to ntsync_wait_any/all via
++                     * args.alert). */
++                    data->alert_fd = fd = (int)reply->ntsync_handle;
++                }
++                else
++                {
++                    data->alert_fd = fd = wine_server_receive_fd( &token );
++                    assert( token == reply->handle );
++                }
+             }
+         }
+         SERVER_END_REQ;
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 55e52af..5262a41 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1115,7 +1115,12 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
+ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
+ {
+     struct thread_data *data = get_thread_data();
+-    close( data->alert_fd );
++    /* Under userspace ntsync (inproc_device_fd == NTSYNC_ANDROID_USED_BY_SERVER),
++     * data->alert_fd is a u32 ntsync-android handle, not a real fd — close()
++     * would close a random fd. The alert event is internal to this thread and
++     * is reaped by ntsync-android's auto-sweep after the process exits. */
++    if (inproc_device_fd != NTSYNC_ANDROID_USED_BY_SERVER)
++        close( data->alert_fd );
+     close( data->wait_fd[0] );
+     close( data->wait_fd[1] );
+     close( data->reply_fd );
 diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
-index 6f30cf0..564a267 100644
+index 6f30cf0..ba1e145 100644
 --- a/include/wine/server_protocol.h
 +++ b/include/wine/server_protocol.h
 @@ -6067,6 +6067,8 @@ struct get_inproc_sync_fd_reply
@@ -277,6 +318,15 @@ index 6f30cf0..564a267 100644
      unsigned int access;
 +    unsigned int ntsync_handle;
 +    char __pad_20[4];
+ };
+ 
+ 
+@@ -6080,7 +6082,7 @@ struct get_inproc_alert_fd_reply
+ {
+     struct reply_header __header;
+     obj_handle_t handle;
+-    char __pad_12[4];
++    unsigned int ntsync_handle;
  };
  
  
@@ -460,7 +510,7 @@ index 522d9a4..bcb623f 100644
      release_object( obj );
  }
 diff --git a/server/protocol.def b/server/protocol.def
-index a9be0a1..402b96f 100644
+index a9be0a1..8d25ee0 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
 @@ -4228,6 +4228,7 @@ enum inproc_sync_type
@@ -471,11 +521,19 @@ index a9be0a1..402b96f 100644
  @END
  
  
+@@ -4235,6 +4236,7 @@ enum inproc_sync_type
+ @REQ(get_inproc_alert_fd)
+ @REPLY
+     obj_handle_t handle;        /* alert fd is in flight with this handle */
++    unsigned int ntsync_handle; /* u32 alert handle when using userspace ntsync (ntsync-android); 0 = use SCM_RIGHTS fd */
+ @END
+ 
+ 
 diff --git a/server/request_handlers.h b/server/request_handlers.h
-index e73242d..2adecf8 100644
+index e73242d..ccc2c04 100644
 --- a/server/request_handlers.h
 +++ b/server/request_handlers.h
-@@ -2330,7 +2330,8 @@ C_ASSERT( offsetof(struct get_inproc_sync_fd_request, handle) == 12 );
+@@ -2330,9 +2330,11 @@ C_ASSERT( offsetof(struct get_inproc_sync_fd_request, handle) == 12 );
  C_ASSERT( sizeof(struct get_inproc_sync_fd_request) == 16 );
  C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, type) == 8 );
  C_ASSERT( offsetof(struct get_inproc_sync_fd_reply, access) == 12 );
@@ -484,9 +542,12 @@ index e73242d..2adecf8 100644
 +C_ASSERT( sizeof(struct get_inproc_sync_fd_reply) == 24 );
  C_ASSERT( sizeof(struct get_inproc_alert_fd_request) == 16 );
  C_ASSERT( offsetof(struct get_inproc_alert_fd_reply, handle) == 8 );
++C_ASSERT( offsetof(struct get_inproc_alert_fd_reply, ntsync_handle) == 12 );
  C_ASSERT( sizeof(struct get_inproc_alert_fd_reply) == 16 );
+ C_ASSERT( offsetof(struct d3dkmt_object_create_request, type) == 12 );
+ C_ASSERT( offsetof(struct d3dkmt_object_create_request, fd) == 16 );
 diff --git a/server/request_trace.h b/server/request_trace.h
-index 9c7518e..df10bcf 100644
+index 9c7518e..5884679 100644
 --- a/server/request_trace.h
 +++ b/server/request_trace.h
 @@ -3411,6 +3411,7 @@ static void dump_get_inproc_sync_fd_reply( const struct get_inproc_sync_fd_reply
@@ -497,8 +558,16 @@ index 9c7518e..df10bcf 100644
  }
  
  static void dump_get_inproc_alert_fd_request( const struct get_inproc_alert_fd_request *req )
+@@ -3420,6 +3421,7 @@ static void dump_get_inproc_alert_fd_request( const struct get_inproc_alert_fd_r
+ static void dump_get_inproc_alert_fd_reply( const struct get_inproc_alert_fd_reply *req )
+ {
+     fprintf( stderr, " handle=%04x", req->handle );
++    fprintf( stderr, ", ntsync_handle=%08x", req->ntsync_handle );
+ }
+ 
+ static void dump_d3dkmt_object_create_request( const struct d3dkmt_object_create_request *req )
 diff --git a/server/thread.c b/server/thread.c
-index bdf48c4..8d11ccc 100644
+index bdf48c4..a29d1e3 100644
 --- a/server/thread.c
 +++ b/server/thread.c
 @@ -60,6 +60,10 @@
@@ -532,3 +601,19 @@ index bdf48c4..8d11ccc 100644
      }
  }
  
+@@ -2383,6 +2396,14 @@ DECL_HANDLER(get_inproc_alert_fd)
+     else
+     {
+         reply->handle = get_thread_id( current ) | 1; /* arbitrary token */
+-        send_client_fd( current->process, fd, reply->handle );
++        if (get_inproc_device_fd() == NTSYNC_ANDROID_USED_BY_SERVER)
++        {
++            /* Userspace ntsync: pass the u32 alert handle in the reply,
++             * no SCM_RIGHTS fd passing (the "fd" is actually a u32
++             * ntsync-android handle, which sendmsg would reject with EBADF). */
++            reply->ntsync_handle = (unsigned int)fd;
++        }
++        else
++            send_client_fd( current->process, fd, reply->handle );
+     }
+ }
