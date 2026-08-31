@@ -291,10 +291,21 @@ index 0127a05..b4c706b 100644
          }
          SERVER_END_REQ;
 diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
-index 55e52af..5262a41 100644
+index 55e52af..393639e 100644
 --- a/dlls/ntdll/unix/thread.c
 +++ b/dlls/ntdll/unix/thread.c
-@@ -1115,7 +1115,12 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
+@@ -76,6 +76,10 @@
+ #include "wine/debug.h"
+ #include "unix_private.h"
+ 
++#ifdef HAVE_LINUX_NTSYNC_H
++# include <linux/ntsync.h>   /* for NTSYNC_ANDROID_USED_BY_SERVER sentinel */
++#endif
++
+ WINE_DEFAULT_DEBUG_CHANNEL(thread);
+ WINE_DECLARE_DEBUG_CHANNEL(seh);
+ WINE_DECLARE_DEBUG_CHANNEL(threadname);
+@@ -1115,7 +1119,12 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
  static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
  {
      struct thread_data *data = get_thread_data();
