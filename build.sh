@@ -52,6 +52,16 @@ TERMUX_PKG_ANTI_BUILD_DEPENDS="vulkan-loader"
 TERMUX_PKG_NO_STATICSPLIT=true
 TERMUX_PKG_AUTO_UPDATE=false
 TERMUX_PKG_EXCLUDED_ARCHES="arm, i686, x86_64"
+# Safety net: never let our ntsync shim headers ship in the .deb — they'd
+# collide with ndk-sysroot's <linux/ntsync.h> (NDK 29+ ships the real kernel
+# uapi header). The headers are installed to a build-private include dir
+# (see termux_step_post_get_source), so they shouldn't end up in
+# $TERMUX_PREFIX/include/ anyway. This list is a belt-and-suspenders cleanup
+# in case anything accidentally writes them there.
+TERMUX_PKG_RM_AFTER_INSTALL="
+include/ntsync_user.h
+include/linux/ntsync.h
+"
 TERMUX_PKG_HOSTBUILD=true
 TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS="
 --without-x
@@ -227,11 +237,20 @@ _build_ntsync_android() {
 }
 
 termux_step_post_get_source() {
-        # Install the ntsync-android shim headers into the Termux sysroot so
-        # Wine's configure detects "linux/ntsync.h" and the patched source
-        # can #include it. We embed the headers as heredocs here so the
-        # package recipe is fully self-contained — no extra files needed
-        # beyond build.sh and patches/ntsync-android.patch.
+        # Install the ntsync-android shim headers into a BUILD-PRIVATE include
+        # directory (NOT $TERMUX_PREFIX/include/) so they:
+        #   (a) don't collide with ndk-sysroot's real <linux/ntsync.h>
+        #       (NDK 29+ ships the kernel uapi header), and
+        #   (b) don't get captured into the hangover-wine .deb (which would
+        #       cause a dpkg file-conflict on install).
+        # The headers are found at build time via -I$TERMUX_PKG_CACHEDIR/
+        # ntsync-shim-include, which is added to CPPFLAGS in
+        # termux_step_pre_configure. After the build, the headers stay in the
+        # cache dir (harmless) and never ship in the .deb.
+        #
+        # We embed the headers as heredocs here so the package recipe is fully
+        # self-contained — no extra files needed beyond build.sh and
+        # patches/ntsync-android.patch.
         #
         # ntsync_user.h  — verbatim copy of the C header from the
         #                  ntsync-android upstream repo (defines
@@ -244,7 +263,9 @@ termux_step_post_get_source() {
         #                  at runtime — all ioctl() call sites are replaced
         #                  by direct ntsync_* function calls in
         #                  patches/ntsync-android.patch.
-        cat > "$TERMUX_PREFIX/include/ntsync_user.h" <<'NTSYNC_USER_H_EOF'
+        local _ntsync_shim_inc="$TERMUX_PKG_CACHEDIR/ntsync-shim-include"
+        mkdir -p "$_ntsync_shim_inc/linux"
+        cat > "$_ntsync_shim_inc/ntsync_user.h" <<'NTSYNC_USER_H_EOF'
 /*
  * Userspace ntsync library for Android - C API.
  *
@@ -384,8 +405,7 @@ int32_t ntsync_wait_all(struct ntsync_wait_args *args);
 #endif /* NTSYNC_USER_H */
 NTSYNC_USER_H_EOF
 
-        mkdir -p "$TERMUX_PREFIX/include/linux"
-        cat > "$TERMUX_PREFIX/include/linux/ntsync.h" <<'NTSYNC_SHIM_EOF'
+        cat > "$_ntsync_shim_inc/linux/ntsync.h" <<'NTSYNC_SHIM_EOF'
 /*
  * linux/ntsync.h shim for Android.
  *
@@ -455,6 +475,18 @@ termux_step_pre_configure() {
         # configure). The .so lands in $TERMUX_PREFIX/lib and gets bundled
         # into the hangover-wine .deb. See _build_ntsync_android above.
         _build_ntsync_android
+
+        # Point the compiler at the ntsync shim headers (written by
+        # termux_step_post_get_source to a build-private dir). Must come
+        # BEFORE the sysroot -I on the search path so our shim <linux/ntsync.h>
+        # shadows ndk-sysroot's real one (NDK 29+ ships the kernel uapi header,
+        # which lacks NTSYNC_ANDROID_USED_BY_SERVER and the ntsync_* function
+        # declarations that our patched Wine source needs).
+        local _ntsync_shim_inc="$TERMUX_PKG_CACHEDIR/ntsync-shim-include"
+        CPPFLAGS="-I$_ntsync_shim_inc $CPPFLAGS"
+        CFLAGS="-I$_ntsync_shim_inc $CFLAGS"
+        CXXFLAGS="-I$_ntsync_shim_inc $CXXFLAGS"
+        export CPPFLAGS CFLAGS CXXFLAGS
 
         # --- Strip Termux's hardening flags (matches upstream behaviour) ------
         # Upstream LuKazuu removes these because they don't play nice with Wine's
