@@ -52,16 +52,6 @@ TERMUX_PKG_ANTI_BUILD_DEPENDS="vulkan-loader"
 TERMUX_PKG_NO_STATICSPLIT=true
 TERMUX_PKG_AUTO_UPDATE=false
 TERMUX_PKG_EXCLUDED_ARCHES="arm, i686, x86_64"
-# Safety net: never let our ntsync shim headers ship in the .deb — they'd
-# collide with ndk-sysroot's <linux/ntsync.h> (NDK 29+ ships the real kernel
-# uapi header). The headers are installed to a build-private include dir
-# (see termux_step_post_get_source), so they shouldn't end up in
-# $TERMUX_PREFIX/include/ anyway. This list is a belt-and-suspenders cleanup
-# in case anything accidentally writes them there.
-TERMUX_PKG_RM_AFTER_INSTALL="
-include/ntsync_user.h
-include/linux/ntsync.h
-"
 TERMUX_PKG_HOSTBUILD=true
 TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS="
 --without-x
@@ -69,7 +59,8 @@ TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS="
 "
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 ac_cv_header_linux_userfaultfd_h=no
-ac_cv_header_linux_ntsync_h=yes
+ac_cv_header_linux_ntsync_h=no
+ac_cv_header_sys_eventfd_h=yes
 ac_cv_path_GRADLE=no
 enable_wineandroid_drv=no
 enable_tools=yes
@@ -188,279 +179,6 @@ _setup_ccache() {
         ccache -s 2>/dev/null || true
 }
 
-# Build libntsync_android.so from source and install it to $TERMUX_PREFIX/lib/
-# so Wine can link against it (-lntsync_android in LDFLAGS). The .so gets
-# bundled into the hangover-wine .deb automatically — anything installed to
-# $TERMUX_PREFIX during the build is captured by the termux package builder.
-#
-# We build ntsync-android inline rather than as a separate termux package,
-# so users don't need to install anything extra. The Rust toolchain is set
-# up on the fly via termux_setup_rust (downloads rustup + the right target).
-#
-# ntsync-android's own .cargo/config.toml adds the 16KB page-size alignment
-# flag (-Wl,-z,max-page-size=16384) required by Google Play for Android 15+,
-# so we don't need to set that here.
-_build_ntsync_android() {
-        # Skip if already built (e.g. when re-running termux_step_pre_configure)
-        if [ -f "$TERMUX_PREFIX/lib/libntsync_android.so" ]; then
-                echo "[ntsync-android] libntsync_android.so already installed, skipping build"
-                return 0
-        fi
-
-        # Set up the Rust toolchain (rustup + target). This downloads rustup
-        # on first run and caches it in $HOME/.cargo. Subsequent builds reuse it.
-        termux_setup_rust
-
-        # Clone (or update) ntsync-android source into the per-package cache
-        # dir so it survives across rebuilds.
-        local _ntsync_src="$TERMUX_PKG_CACHEDIR/ntsync-android-src"
-        if [ ! -d "$_ntsync_src" ]; then
-                git clone --depth 1 https://github.com/joshuatam/ntsync-android.git "$_ntsync_src"
-        fi
-
-        # Cross-compile for the current arch. termux_setup_toolchain already
-        # set CARGO_TARGET_NAME and CARGO_TARGET_*_LINKER for us, so cargo
-        # knows where the NDK clang is.
-        echo "[ntsync-android] building libntsync_android.so for $CARGO_TARGET_NAME"
-        ( cd "$_ntsync_src" && \
-                cargo build --jobs "$TERMUX_PKG_MAKE_PROCESSES" \
-                        --release --target "$CARGO_TARGET_NAME" )
-
-        # Install the .so to $TERMUX_PREFIX/lib so Wine's linker finds it
-        # at build time, and so the termux package builder bundles it into
-        # the hangover-wine .deb (it captures everything installed to
-        # $TERMUX_PREFIX during the build).
-        install -Dm644 \
-                "$_ntsync_src/target/$CARGO_TARGET_NAME/release/libntsync_android.so" \
-                "$TERMUX_PREFIX/lib/libntsync_android.so"
-        echo "[ntsync-android] installed to $TERMUX_PREFIX/lib/libntsync_android.so"
-}
-
-termux_step_post_get_source() {
-        # Install the ntsync-android shim headers into a BUILD-PRIVATE include
-        # directory (NOT $TERMUX_PREFIX/include/) so they:
-        #   (a) don't collide with ndk-sysroot's real <linux/ntsync.h>
-        #       (NDK 29+ ships the kernel uapi header), and
-        #   (b) don't get captured into the hangover-wine .deb (which would
-        #       cause a dpkg file-conflict on install).
-        # The headers are found at build time via -I$TERMUX_PKG_CACHEDIR/
-        # ntsync-shim-include, which is added to CPPFLAGS in
-        # termux_step_pre_configure. After the build, the headers stay in the
-        # cache dir (harmless) and never ship in the .deb.
-        #
-        # We embed the headers as heredocs here so the package recipe is fully
-        # self-contained — no extra files needed beyond build.sh and
-        # patches/ntsync-android.patch.
-        #
-        # ntsync_user.h  — verbatim copy of the C header from the
-        #                  ntsync-android upstream repo (defines
-        #                  ntsync_create_sem, ntsync_wait_any,
-        #                  NTSYNC_ANDROID_USED_BY_SERVER, etc.).
-        # linux/ntsync.h — shim that includes ntsync_user.h and defines the
-        #                  NTSYNC_IOC_* constants as non-zero sentinels so
-        #                  Wine's existing #ifdef NTSYNC_IOC_EVENT_READ code
-        #                  paths compile. The numeric values are never used
-        #                  at runtime — all ioctl() call sites are replaced
-        #                  by direct ntsync_* function calls in
-        #                  patches/ntsync-android.patch.
-        local _ntsync_shim_inc="$TERMUX_PKG_CACHEDIR/ntsync-shim-include"
-        mkdir -p "$_ntsync_shim_inc/linux"
-        cat > "$_ntsync_shim_inc/ntsync_user.h" <<'NTSYNC_USER_H_EOF'
-/*
- * Userspace ntsync library for Android - C API.
- *
- * Copyright (C) 2026 Joshua Tam <297250+joshuatam@users.noreply.github.com>
- *
- * This library is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as
- * published by the Free Software Foundation, version 3 only.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library. If not, see <https://www.gnu.org/licenses/>.
- *
- * Mirrors the Linux /dev/ntsync ioctl interface (include/uapi/linux/ntsync.h)
- * with u32 handles in place of kernel fds. All functions return 0 on success
- * or a negative errno, exactly like the kernel ioctls.
- *
- * Objects live in a file-backed shared mapping and are cross-process: any
- * process that opens the same region path sees the same handles. Waits use
- * futexes on the shared pages.
- *
- * Alertable waits are supported: if ntsync_wait_args.alert is nonzero it
- * names an event object that aborts the wait; the wait returns success with
- * index == count, exactly like the kernel ioctls.
- * Divergence from the kernel: closing an object other threads are waiting on
- * fails those waits with -EINVAL; objects leaked by a crashed process must
- * be reclaimed with ntsync_sweep_dead().
- *
- * SPDX-License-Identifier: LGPL-3.0-only
- */
-#ifndef NTSYNC_USER_H
-#define NTSYNC_USER_H
-
-#include <stdint.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-struct ntsync_sem_args {
-    uint32_t count;
-    uint32_t max;
-};
-
-struct ntsync_mutex_args {
-    uint32_t owner;
-    uint32_t count;
-};
-
-struct ntsync_event_args {
-    uint32_t manual;
-    uint32_t signaled;
-};
-
-#define NTSYNC_WAIT_REALTIME 0x1
-
-struct ntsync_wait_args {
-    /* Absolute timeout in ns; CLOCK_MONOTONIC, or CLOCK_REALTIME if
-     * NTSYNC_WAIT_REALTIME is set. UINT64_MAX = infinite. */
-    uint64_t timeout;
-    /* Pointer to an array of `count` uint32_t handles. */
-    uint64_t objs;
-    uint32_t count;
-    /* Out: index of the object that satisfied the wait. */
-    uint32_t index;
-    uint32_t flags;
-    /* In: owner tid used to acquire mutexes. */
-    uint32_t owner;
-    /* In: optional alert event handle (0 = none); aborts the wait, which
-     * then returns success with index == count. */
-    uint32_t alert;
-    uint32_t pad;
-};
-
-#define NTSYNC_MAX_WAIT_COUNT 64
-
-/* Wine integration: wineserver reports userspace ntsync to clients by
- * putting this sentinel in the inproc_device field of the init_first_thread
- * reply, and passes object handles in the fsync_shm_idx reply field instead
- * of SCM_RIGHTS fd passing. */
-#define NTSYNC_ANDROID_USED_BY_SERVER 0x7eadfe01
-
-/* Initialize the shared region. `path` may be NULL to use
- * $TMPDIR/ntsync_userspace.shm (the caller must export TMPDIR); a layout
- * version is inserted before the ".shm" extension (ntsync_userspace.vN.shm).
- * Idempotent; all other functions auto-initialize on first use. */
-int32_t ntsync_init(const char *path);
-
-/* Free all objects whose creator process no longer exists. Userspace has no
- * fd-close-on-death hook, so a launcher/server should call this after a
- * process exits. Returns the number of freed objects or a negative errno. */
-int32_t ntsync_sweep_dead(void);
-
-/* Create objects. Return 0 and store the handle, or a negative errno.
- * Handles are never 0: slot 0 is permanently reserved because 0 is the
- * "no alert" sentinel in ntsync_wait_args.alert. */
-int32_t ntsync_create_sem(uint32_t *out_handle, const struct ntsync_sem_args *args);
-int32_t ntsync_create_mutex(uint32_t *out_handle, const struct ntsync_mutex_args *args);
-int32_t ntsync_create_event(uint32_t *out_handle, const struct ntsync_event_args *args);
-
-/* Destroy an object. Returns -EINVAL for a bad handle. */
-int32_t ntsync_close(uint32_t handle);
-
-/* Semaphores. On success, sem_release overwrites *count with the previous
- * count; returns -EOVERFLOW (state unchanged) if count would exceed max. */
-int32_t ntsync_sem_release(uint32_t handle, uint32_t *count);
-int32_t ntsync_sem_read(uint32_t handle, struct ntsync_sem_args *args);
-
-/* Mutexes. args->owner is input; on success args->count is overwritten with
- * the previous recursion count. Returns -EPERM if not the owner.
- * mutex_read returns -EOWNERDEAD if the mutex is abandoned. */
-int32_t ntsync_mutex_unlock(uint32_t handle, struct ntsync_mutex_args *args);
-int32_t ntsync_mutex_kill(uint32_t handle, uint32_t owner);
-int32_t ntsync_mutex_read(uint32_t handle, struct ntsync_mutex_args *args);
-
-/* Events. On success, set/reset/pulse store the previous signaled state in
- * *prev (if non-NULL), like the kernel ioctls. */
-int32_t ntsync_event_set(uint32_t handle, uint32_t *prev);
-int32_t ntsync_event_reset(uint32_t handle, uint32_t *prev);
-int32_t ntsync_event_pulse(uint32_t handle, uint32_t *prev);
-int32_t ntsync_event_read(uint32_t handle, struct ntsync_event_args *args);
-
-/* Waits. Return 0 and set args->index on success, -EOWNERDEAD (and set
- * args->index) when an abandoned mutex was acquired, -ETIMEDOUT on timeout,
- * -EINVAL on bad arguments. */
-int32_t ntsync_wait_any(struct ntsync_wait_args *args);
-int32_t ntsync_wait_all(struct ntsync_wait_args *args);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* NTSYNC_USER_H */
-NTSYNC_USER_H_EOF
-
-        cat > "$_ntsync_shim_inc/linux/ntsync.h" <<'NTSYNC_SHIM_EOF'
-/*
- * linux/ntsync.h shim for Android.
- *
- * Android's kernel has no /dev/ntsync driver, so Wine's native ntsync
- * fast-path (which uses ioctl(fd, NTSYNC_IOC_*, ...) on /dev/ntsync)
- * cannot work as-is. The ntsync-android userspace library
- * (https://github.com/joshuatam/ntsync-android) provides a drop-in
- * replacement that mirrors the kernel ioctl ABI but uses u32 handles
- * in shared memory instead of fds.
- *
- * This shim header makes Wine's configure detect "linux/ntsync.h" so
- * that the existing NTSYNC_IOC_EVENT_READ code paths compile. The
- * actual ioctl() calls in Wine's source are redirected to the
- * ntsync-android C functions by patches/ntsync-android.patch.
- *
- * SPDX-License-Identifier: LGPL-3.0-only
- */
-#ifndef __LINUX_NTSYNC_H_SHIM
-#define __LINUX_NTSYNC_H_SHIM
-
-#include <ntsync_user.h>
-
-/*
- * Define the NTSYNC_IOC_* constants that Wine's source tests for via
- * #ifdef NTSYNC_IOC_EVENT_READ. The numeric values are never used at
- * runtime — all ioctl() call sites are replaced by direct ntsync_*
- * function calls in the patch — but the symbols must exist for the
- * preprocessor.
- */
-#define NTSYNC_IOC_CREATE_SEM       0xdead0001
-#define NTSYNC_IOC_CREATE_MUTEX     0xdead0002
-#define NTSYNC_IOC_CREATE_EVENT     0xdead0003
-#define NTSYNC_IOC_SEM_RELEASE      0xdead0004
-#define NTSYNC_IOC_SEM_READ         0xdead0005
-#define NTSYNC_IOC_MUTEX_UNLOCK     0xdead0006
-#define NTSYNC_IOC_MUTEX_KILL       0xdead0007
-#define NTSYNC_IOC_MUTEX_READ       0xdead0008
-#define NTSYNC_IOC_EVENT_SET        0xdead0009
-#define NTSYNC_IOC_EVENT_RESET      0xdead000a
-#define NTSYNC_IOC_EVENT_PULSE      0xdead000b
-#define NTSYNC_IOC_EVENT_READ       0xdead000c
-#define NTSYNC_IOC_WAIT_ANY         0xdead000d
-#define NTSYNC_IOC_WAIT_ALL         0xdead000e
-
-#endif /* __LINUX_NTSYNC_H_SHIM */
-NTSYNC_SHIM_EOF
-
-        # Regenerate protocol headers from the patched protocol.def
-        # (patches/ntsync-android.patch adds an `ntsync_handle` field to
-        # get_inproc_sync_fd_reply). Wine's build system normally does
-        # this itself via tools/make_requests when protocol.def is newer
-        # than the generated headers, but we run it explicitly to be safe.
-        ( cd "$TERMUX_PKG_SRCDIR" && perl tools/make_requests ) || true
-}
-
 termux_step_host_build() {
         _setup_llvm_mingw_toolchain
         _setup_ccache
@@ -470,23 +188,6 @@ termux_step_host_build() {
 termux_step_pre_configure() {
         _setup_llvm_mingw_toolchain
         _setup_ccache
-
-        # Build libntsync_android.so now (after toolchain setup, before Wine
-        # configure). The .so lands in $TERMUX_PREFIX/lib and gets bundled
-        # into the hangover-wine .deb. See _build_ntsync_android above.
-        _build_ntsync_android
-
-        # Point the compiler at the ntsync shim headers (written by
-        # termux_step_post_get_source to a build-private dir). Must come
-        # BEFORE the sysroot -I on the search path so our shim <linux/ntsync.h>
-        # shadows ndk-sysroot's real one (NDK 29+ ships the kernel uapi header,
-        # which lacks NTSYNC_ANDROID_USED_BY_SERVER and the ntsync_* function
-        # declarations that our patched Wine source needs).
-        local _ntsync_shim_inc="$TERMUX_PKG_CACHEDIR/ntsync-shim-include"
-        CPPFLAGS="-I$_ntsync_shim_inc $CPPFLAGS"
-        CFLAGS="-I$_ntsync_shim_inc $CFLAGS"
-        CXXFLAGS="-I$_ntsync_shim_inc $CXXFLAGS"
-        export CPPFLAGS CFLAGS CXXFLAGS
 
         # --- Strip Termux's hardening flags (matches upstream behaviour) ------
         # Upstream LuKazuu removes these because they don't play nice with Wine's
@@ -532,12 +233,6 @@ termux_step_pre_configure() {
         # .debug_line survive all three.
         LDFLAGS+=" -landroid-spawn"
         LDFLAGS+=" -Wl,--rosegment -Wl,--gc-sections -Wl,--icf=safe"
-
-        # ntsync-android: the patched wineserver and ntdll/unix/sync.c call
-        # ntsync_init(), ntsync_create_sem(), ntsync_wait_any(), ... directly
-        # (see patches/ntsync-android.patch). Link the shared library so
-        # every Wine process has access to the shared-memory ntsync region.
-        LDFLAGS+=" -lntsync_android"
 
         # Section-level dead-code elimination. These work WITH --gc-sections to
         # let the linker drop unused function/data. They do NOT touch .symtab
