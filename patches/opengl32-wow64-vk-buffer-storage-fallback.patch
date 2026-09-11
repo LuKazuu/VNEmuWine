@@ -2,8 +2,7 @@ diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
 index 0ba0282..c7289a8 100644
 --- a/dlls/opengl32/unix_wgl.c
 +++ b/dlls/opengl32/unix_wgl.c
-@@ -313,7 +313,37 @@ static BOOL initialize_vk_device( TEB *teb, const struct opengl_context *ctx )
-     static PFN_vkGetPhysicalDeviceMemoryProperties p_vkGetPhysicalDeviceMemoryProperties;
+@@ -312,6 +312,36 @@ static BOOL initialize_vk_device( TEB *teb, const struct opengl_context *ctx )
      static PFN_vkGetPhysicalDeviceProperties2KHR p_vkGetPhysicalDeviceProperties2KHR;
  
      if (buffers.vk_device) return TRUE; /* already initialized */
