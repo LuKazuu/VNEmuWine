@@ -2,7 +2,8 @@ diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
 index 0ba0282..c7289a8 100644
 --- a/dlls/opengl32/unix_wgl.c
 +++ b/dlls/opengl32/unix_wgl.c
-@@ -802,6 +802,36 @@ static BOOL initialize_vk_device( TEB *teb, struct context *ctx )
+@@ -313,7 +313,37 @@ static BOOL initialize_vk_device( TEB *teb, const struct opengl_context *ctx )
+     static PFN_vkGetPhysicalDeviceMemoryProperties p_vkGetPhysicalDeviceMemoryProperties;
      static PFN_vkGetPhysicalDeviceProperties2KHR p_vkGetPhysicalDeviceProperties2KHR;
  
      if (buffers.vk_device) return TRUE; /* already initialized */
@@ -36,6 +37,6 @@ index 0ba0282..c7289a8 100644
 +        }
 +    }
 +
-     if (!client->extensions[GL_EXT_memory_object_win32] )
+     if (!ctx->extensions[GL_EXT_memory_object_fd] )
      {
-         TRACE( "GL_EXT_memory_object_win32 is not supported\n" );
+         TRACE( "GL_EXT_memory_object_fd is not supported\n" );
