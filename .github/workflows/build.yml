@@ -347,7 +347,7 @@ jobs:
         run: |
           cd termux-packages
           sudo -E ./scripts/run-docker.sh ./build-package.sh -a aarch64 -I x11-packages/hangover-wine 2>&1 | tee build.log || {
-            tail -200 build.log; exit 1 }
+            tail -200 build.log; exit 1; }
 
       - name: Collect
         run: mkdir -p artifacts && find termux-packages -name "*.deb" -type f -exec cp {} artifacts/ \; && ls -la artifacts/
