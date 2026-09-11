@@ -107,7 +107,7 @@ index 123f057..360f90a 100644
 \ No newline at end of file
 +}
 diff --git a/wine/wow64/wowbox64.c b/wine/wow64/wowbox64.c
-index 7ee9fe4..62ddcd9 100644
+index 7ee9fe4..804845e 100644
 --- a/wine/wow64/wowbox64.c
 +++ b/wine/wow64/wowbox64.c
 @@ -111,6 +111,8 @@ cpu_ext_t cpuext = {0};
@@ -221,9 +221,7 @@ index 7ee9fe4..62ddcd9 100644
 +}
 +
 +void WINAPI BTCpuNotifyReadFile(HANDLE handle, PVOID addr, SIZE_T size, BOOL after, NTSTATUS status)
- {
--    printf_log(LOG_DEBUG, "BTCpuNotifyUnmapViewOfSection(%p, %u)\n", addr, flags);
--    invalidate_mapped_section(addr);
++{
 +    printf_log(LOG_DEBUG, "BTCpuNotifyReadFile(%p, %p, %zu, %u, %08x)\n", handle, addr, size, after, status);
 +    /* Invalidate before the kernel writes into a possibly translated page. */
 +    if (!after && addr && size)
@@ -231,7 +229,9 @@ index 7ee9fe4..62ddcd9 100644
 +}
 +
 +void WINAPI BTCpuNotifyUnmapViewOfSection(PVOID addr, BOOL after, ULONG status)
-+{
+ {
+-    printf_log(LOG_DEBUG, "BTCpuNotifyUnmapViewOfSection(%p, %u)\n", addr, flags);
+-    invalidate_mapped_section(addr);
 +    printf_log(LOG_DEBUG, "BTCpuNotifyUnmapViewOfSection(%p, %u, %08x)\n", addr, after, status);
 +    if (!after)
 +        invalidate_mapped_section(addr);
@@ -333,7 +333,7 @@ index 7ee9fe4..62ddcd9 100644
  NTSTATUS WINAPI BTCpuThreadInit(void)
  {
      printf_log(LOG_DEBUG, "BTCpuThreadInit()\n");
-@@ -408,6 +534,30 @@ NTSTATUS WINAPI BTCpuThreadInit(void)
+@@ -408,6 +534,14 @@ NTSTATUS WINAPI BTCpuThreadInit(void)
      return STATUS_SUCCESS;
  }
  
@@ -345,26 +345,10 @@ index 7ee9fe4..62ddcd9 100644
 +       rather than risk freeing live TLS state. */
 +}
 +
-+void WINAPI BTCpuUpdateProcessorInformation(SYSTEM_CPU_INFORMATION* info)
-+{
-+    printf_log(LOG_DEBUG, "BTCpuUpdateProcessorInformation(%p)\n", info);
-+    if (!info)
-+        return;
-+    info->ProcessorArchitecture = PROCESSOR_ARCHITECTURE_INTEL;
-+    info->ProcessorLevel = 6;
-+    info->ProcessorRevision = 0x3a09;
-+    info->ProcessorFeatureBits =
-+        0x00000005 | 0x00000002 | 0x00000008 | 0x00000014 | 0x00000024 |
-+        0x00000040 | 0x00000080 | 0x00000100 | 0x00000200 | 0x00000400 |
-+        0x00000800 | 0x00001000 | 0x00002000 | 0x00004000 | 0x00008000 |
-+        0x00010000 | 0x00080000 | 0x00100000 | 0x00200000 | 0x00400000 |
-+        0x01000000 | 0x02000000 | 0x20000000;
-+}
-+
  void EmitInterruptionImpl(x64emu_t* emu, int code)
  {
      if (code == 0x2e /* NT syscall */) {
-@@ -438,9 +588,10 @@ void EmitInterruptionImpl(x64emu_t* emu, int code)
+@@ -438,9 +572,10 @@ void EmitInterruptionImpl(x64emu_t* emu, int code)
              uintptr_t handle_high = Pop32(emu);
              unsigned int code = Pop32(emu);
              uintptr_t args = Pop32(emu);
@@ -376,7 +360,7 @@ index 7ee9fe4..62ddcd9 100644
          } else {
              R_EAX = Wow64SystemServiceEx(id, ULongToPtr(ctx->Esp + 4));
          }
-@@ -455,15 +606,38 @@ void EmitInterruptionImpl(x64emu_t* emu, int code)
+@@ -455,15 +590,38 @@ void EmitInterruptionImpl(x64emu_t* emu, int code)
          R_RIP = ctx->Eip;
          if (cpu->Flags & WOW64_CPURESERVED_FLAG_RESET_STATE) {
              cpu->Flags &= ~WOW64_CPURESERVED_FLAG_RESET_STATE;
@@ -417,7 +401,7 @@ index 7ee9fe4..62ddcd9 100644
      }
  }
  
-@@ -493,6 +667,12 @@ NTSTATUS WINAPI LdrDisableThreadCalloutsForDll(HMODULE);
+@@ -493,6 +651,12 @@ NTSTATUS WINAPI LdrDisableThreadCalloutsForDll(HMODULE);
  
  BOOL WINAPI DllMainCRTStartup(HINSTANCE inst, DWORD reason, void* reserved)
  {
