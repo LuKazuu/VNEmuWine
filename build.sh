@@ -29,8 +29,6 @@
 #   5. STILL delete `*.a`, `*.lib`, `*.def`, `include/`, `share/man/` like
 #      upstream — these are pure dev artifacts, irrelevant for running Wine
 #      and irrelevant for runtime debugging. They just bloat the .deb.
-#   6. STILL use ccache (ported from The412Banner/proton-wine). Subsequent
-#      CI runs / local rebuilds that touch only a few files get cache hits.
 #
 # Bottom line for the user:
 #   - Performance: SAME as upstream stripped build. Play games normally.
@@ -136,53 +134,6 @@ _setup_llvm_mingw_toolchain() {
         export PATH="$_extract_path/bin:$PATH"
 }
 
-# Enable ccache for both unix clang (CC/CXX) and mingw clang (PATH-resolved).
-# Ported from The412Banner/proton-wine build-step-x86_64.sh.
-# Safe no-op when ccache is not installed.
-_setup_ccache() {
-        if ! command -v ccache >/dev/null 2>&1; then
-                echo "[ccache] not found on PATH — direct compile (no cache)."
-                return 0
-        fi
-        # When running inside Termux's package-builder Docker image, the
-        # termux-packages repo is mounted at /home/builder/termux-packages and
-        # is the only path that is visible to the host runner. Putting the
-        # ccache dir INSIDE that mount lets GitHub Actions `actions/cache@v4`
-        # persist it across runs (huge speedup when iterating on patches).
-        if [ "${CI:-false}" = "true" ] && [ -d /home/builder/termux-packages ]; then
-                export CCACHE_DIR="${CCACHE_DIR:-/home/builder/termux-packages/.ccache}"
-        else
-                export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
-        fi
-        ccache -M 5G >/dev/null 2>&1 || true
-        ccache --set-config=hash_dir=false >/dev/null 2>&1 || true
-        ccache --set-config=compression=true >/dev/null 2>&1 || true
-
-        # Masquerade dir — Wine's PE side uses `--with-mingw=clang`, which resolves
-        # `clang` from PATH. Putting ccache symlinks first on PATH makes every
-        # cross-compile invocation go through ccache too.
-        local _ccache_bin="$HOME/ccache-bin"
-        mkdir -p "$_ccache_bin"
-        ln -sf "$(command -v ccache)" "$_ccache_bin/clang"
-        ln -sf "$(command -v ccache)" "$_ccache_bin/clang++"
-        export PATH="$_ccache_bin:$PATH"
-
-        # Wrap the unix-side compiler too. CC/CXX may already be set by Termux;
-        # avoid double-wrapping if we already ran this once.
-        case "${CC:-}" in
-                *ccache*) ;;
-                *) export CC="ccache ${CC:-clang}"
-                   export CXX="ccache ${CXX:-clang++}" ;;
-        esac
-        case "${HOSTCC:-}" in
-                *ccache*) ;;
-                *) export HOSTCC="ccache ${HOSTCC:-cc}"
-                   export HOSTCXX="ccache ${HOSTCXX:-c++}" ;;
-        esac
-        echo "[ccache] enabled, cache_dir=$CCACHE_DIR, CC=$CC"
-        ccache -s 2>/dev/null || true
-}
-
 # Build libntsync_android.a (userspace ntsync) from source and install it to
 # $TERMUX_PREFIX/lib/ so Wine can link against it (-lntsync_android in the
 # patched dlls/ntdll/Makefile.in and server/Makefile.in).
@@ -234,13 +185,11 @@ _build_ntsync_android() {
 
 termux_step_host_build() {
         _setup_llvm_mingw_toolchain
-        _setup_ccache
         "$TERMUX_PKG_SRCDIR/configure" ${TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS}
         make -j "$TERMUX_PKG_MAKE_PROCESSES" __tooldeps__ nls/all
 }
 termux_step_pre_configure() {
         _setup_llvm_mingw_toolchain
-        _setup_ccache
 
         # Build libntsync_android.a now (after toolchain setup, before Wine
         # configure+make). The archive lands in $TERMUX_PREFIX/lib and is
