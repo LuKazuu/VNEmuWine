@@ -1,7 +1,7 @@
-NTSYNC + userspace ntsync support for Wine 11.17 (Termux/Hangover).
+NTSYNC + userspace ntsync support for Wine 11.16 (Termux/Hangover).
 
 Ported from GameNative/proton-wine (android/patches/common/*ntsync* and
-related commits d67ac1e, 0971187, 962a379) to upstream Wine 11.17, which
+related commits d67ac1e, 0971187, 962a379) to upstream Wine 11.16, which
 removed esync entirely in favour of the ntsync-based in-process sync.
 
 What this patch does:
@@ -28,7 +28,7 @@ What this patch does:
   it is built from https://github.com/GameNative/ntsync-android by
   build.sh (termux_setup_rust + cargo build --release, staticlib).
 
-Differences from the GameNative original: upstream 11.17 has no fsync, so
+Differences from the GameNative original: upstream 11.16 has no fsync, so
 all do_fsync()/fsync_shm_idx code paths are dropped; the new reply field
 is named ntsync_handle instead of reusing Proton's fsync_shm_idx; the
 GameNative container dosdevices mapping is not ported (termux-fix-paths
