@@ -13,9 +13,9 @@ on:
         required: true
         default: 'wine'
       wine_version:
-        description: 'Wine version (e.g. 11.17) — only used when component=wine'
+        description: 'Wine version (e.g. 11.16) — only used when component=wine'
         type: string
-        default: '11.17'
+        default: '11.16'
       fexcore_ref:
         description: 'FEX-Emu/FEX git ref. Default: main'
         type: string
@@ -335,19 +335,51 @@ jobs:
       - name: Free disk space
         run: cd termux-packages && export CI=true && ./scripts/free-space.sh && df -h
 
-      # Pre-pull the upstream Termux package-builder Docker image so the
-      # build step below doesn't pay the pull cost inline.
-      - name: Pull builder image
+      # ------------------------------------------------------------------------
+      # ccache: persist compiled objects across CI runs.
+      # The cache lives INSIDE the termux-packages dir because that's the only
+      # path the Docker container shares with the host runner. The build.sh's
+      # `_setup_ccache` function auto-detects CI mode and picks this path.
+      # ------------------------------------------------------------------------
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: termux-packages/.ccache
+          key: ccache-aarch64-wine-${{ steps.ver.outputs.wine_version }}-${{ hashFiles('patches/**/*.patch', 'patches/*.patch', 'patches/*.patch.beforehostbuild', 'build.sh') }}
+          restore-keys: |
+            ccache-aarch64-wine-${{ steps.ver.outputs.wine_version }}-
+            ccache-aarch64-wine-
+            ccache-aarch64-
+
+      - name: Build ccache-enabled builder image
         run: |
           sudo systemctl start docker || true
           sudo docker pull ghcr.io/termux/package-builder:latest
+          # Tiny layer on top of the upstream image — only adds ccache.
+          cat > /tmp/Dockerfile.ccache <<'EOF'
+          FROM ghcr.io/termux/package-builder:latest
+          USER root
+          RUN apt-get update -qq && apt-get install -y --no-install-recommends ccache && rm -rf /var/lib/apt/lists/*
+          USER builder
+          EOF
+          sudo docker build -f /tmp/Dockerfile.ccache -t package-builder-ccache:latest /tmp
           sudo docker images | grep package-builder
 
       - name: Build
+        env:
+          TERMUX_DOCKER_IMAGE: package-builder-ccache:latest
         run: |
           cd termux-packages
+          mkdir -p .ccache
           sudo -E ./scripts/run-docker.sh ./build-package.sh -a aarch64 -I x11-packages/hangover-wine 2>&1 | tee build.log || {
             tail -200 build.log; exit 1; }
+
+      - name: ccache stats
+        run: |
+          if [ -d termux-packages/.ccache ]; then
+            sudo cat termux-packages/.ccache/ccache.conf 2>/dev/null || true
+            du -sh termux-packages/.ccache 2>/dev/null || true
+          fi
 
       - name: Collect
         run: mkdir -p artifacts && find termux-packages -name "*.deb" -type f -exec cp {} artifacts/ \; && ls -la artifacts/

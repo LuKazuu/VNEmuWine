@@ -29,6 +29,8 @@
 #   5. STILL delete `*.a`, `*.lib`, `*.def`, `include/`, `share/man/` like
 #      upstream — these are pure dev artifacts, irrelevant for running Wine
 #      and irrelevant for runtime debugging. They just bloat the .deb.
+#   6. STILL use ccache (ported from The412Banner/proton-wine). Subsequent
+#      CI runs / local rebuilds that touch only a few files get cache hits.
 #
 # Bottom line for the user:
 #   - Performance: SAME as upstream stripped build. Play games normally.
@@ -50,12 +52,6 @@ TERMUX_PKG_ANTI_BUILD_DEPENDS="vulkan-loader"
 TERMUX_PKG_NO_STATICSPLIT=true
 TERMUX_PKG_AUTO_UPDATE=false
 TERMUX_PKG_EXCLUDED_ARCHES="arm, i686, x86_64"
-# libntsync_android.a is linked (statically) into ntdll.so and wineserver at
-# build time; it is NOT needed at runtime, so keep the ~20 MB Rust archive
-# out of the shipped .deb. It is built by _build_ntsync_android() below.
-TERMUX_PKG_RM_AFTER_INSTALL="
-lib/libntsync_android.a
-"
 TERMUX_PKG_HOSTBUILD=true
 TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS="
 --without-x
@@ -63,6 +59,8 @@ TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS="
 "
 TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
 ac_cv_header_linux_userfaultfd_h=no
+ac_cv_header_linux_ntsync_h=no
+ac_cv_header_sys_eventfd_h=yes
 ac_cv_path_GRADLE=no
 enable_wineandroid_drv=no
 enable_tools=yes
@@ -134,74 +132,62 @@ _setup_llvm_mingw_toolchain() {
         export PATH="$_extract_path/bin:$PATH"
 }
 
-# Build libntsync_android.a (userspace ntsync) from source and install it to
-# $TERMUX_PREFIX/lib/ so Wine can link against it (-lntsync_android in the
-# patched dlls/ntdll/Makefile.in and server/Makefile.in).
-#
-# STATIC archive on purpose (ported from GameNative/proton-wine): a dynamic
-# libntsync_android.so would live outside the bionic linker namespace that
-# box64's ELF loader searches, which made dlopen("ntdll.so") fail on x86_64
-# GameNative builds; static-linking the archive into ntdll + wineserver avoids
-# the whole class of namespace problems.
-#
-# The Rust toolchain is set up on the fly via termux_setup_rust; Termux's
-# toolchain setup already exports CARGO_TARGET_NAME and
-# CARGO_TARGET_<TRIPLE>_LINKER pointing at the NDK clang, so plain
-# `cargo build --target $CARGO_TARGET_NAME` cross-compiles correctly.
-#
-# The archive is removed from the final .deb again via
-# TERMUX_PKG_RM_AFTER_INSTALL (it is only needed at link time).
-_build_ntsync_android() {
-        # Skip if already built (e.g. when re-running termux_step_pre_configure)
-        if [ -f "$TERMUX_PREFIX/lib/libntsync_android.a" ]; then
-                echo "[ntsync-android] libntsync_android.a already installed, skipping build"
+# Enable ccache for both unix clang (CC/CXX) and mingw clang (PATH-resolved).
+# Ported from The412Banner/proton-wine build-step-x86_64.sh.
+# Safe no-op when ccache is not installed.
+_setup_ccache() {
+        if ! command -v ccache >/dev/null 2>&1; then
+                echo "[ccache] not found on PATH — direct compile (no cache)."
                 return 0
         fi
-
-        # Set up the Rust toolchain (rustup + target). This downloads rustup
-        # on first run and caches it in $HOME/.cargo. Subsequent builds reuse it.
-        termux_setup_rust
-
-        # Clone (or update) the ntsync-android source into the per-package cache
-        # dir so it survives across rebuilds.
-        local _ntsync_src="$TERMUX_PKG_CACHEDIR/ntsync-android-src"
-        if [ ! -d "$_ntsync_src" ]; then
-                git clone --depth 1 https://github.com/GameNative/ntsync-android.git "$_ntsync_src"
+        # When running inside Termux's package-builder Docker image, the
+        # termux-packages repo is mounted at /home/builder/termux-packages and
+        # is the only path that is visible to the host runner. Putting the
+        # ccache dir INSIDE that mount lets GitHub Actions `actions/cache@v4`
+        # persist it across runs (huge speedup when iterating on patches).
+        if [ "${CI:-false}" = "true" ] && [ -d /home/builder/termux-packages ]; then
+                export CCACHE_DIR="${CCACHE_DIR:-/home/builder/termux-packages/.ccache}"
+        else
+                export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
         fi
+        ccache -M 5G >/dev/null 2>&1 || true
+        ccache --set-config=hash_dir=false >/dev/null 2>&1 || true
+        ccache --set-config=compression=true >/dev/null 2>&1 || true
 
-        # Cross-compile for the current arch. The crate builds both a cdylib
-        # and a staticlib; we only install the static archive.
-        echo "[ntsync-android] building libntsync_android.a for $CARGO_TARGET_NAME"
-        ( cd "$_ntsync_src" && \
-                cargo build --jobs "$TERMUX_PKG_MAKE_PROCESSES" \
-                        --release --target "$CARGO_TARGET_NAME" )
+        # Masquerade dir — Wine's PE side uses `--with-mingw=clang`, which resolves
+        # `clang` from PATH. Putting ccache symlinks first on PATH makes every
+        # cross-compile invocation go through ccache too.
+        local _ccache_bin="$HOME/ccache-bin"
+        mkdir -p "$_ccache_bin"
+        ln -sf "$(command -v ccache)" "$_ccache_bin/clang"
+        ln -sf "$(command -v ccache)" "$_ccache_bin/clang++"
+        export PATH="$_ccache_bin:$PATH"
 
-        install -Dm644 \
-                "$_ntsync_src/target/$CARGO_TARGET_NAME/release/libntsync_android.a" \
-                "$TERMUX_PREFIX/lib/libntsync_android.a"
-        rm -f "$TERMUX_PREFIX/lib/libntsync_android.so"
-        echo "[ntsync-android] installed to $TERMUX_PREFIX/lib/libntsync_android.a"
+        # Wrap the unix-side compiler too. CC/CXX may already be set by Termux;
+        # avoid double-wrapping if we already ran this once.
+        case "${CC:-}" in
+                *ccache*) ;;
+                *) export CC="ccache ${CC:-clang}"
+                   export CXX="ccache ${CXX:-clang++}" ;;
+        esac
+        case "${HOSTCC:-}" in
+                *ccache*) ;;
+                *) export HOSTCC="ccache ${HOSTCC:-cc}"
+                   export HOSTCXX="ccache ${HOSTCXX:-c++}" ;;
+        esac
+        echo "[ccache] enabled, cache_dir=$CCACHE_DIR, CC=$CC"
+        ccache -s 2>/dev/null || true
 }
 
 termux_step_host_build() {
         _setup_llvm_mingw_toolchain
+        _setup_ccache
         "$TERMUX_PKG_SRCDIR/configure" ${TERMUX_PKG_EXTRA_HOSTBUILD_CONFIGURE_ARGS}
         make -j "$TERMUX_PKG_MAKE_PROCESSES" __tooldeps__ nls/all
 }
 termux_step_pre_configure() {
         _setup_llvm_mingw_toolchain
-
-        # Build libntsync_android.a now (after toolchain setup, before Wine
-        # configure+make). The archive lands in $TERMUX_PREFIX/lib and is
-        # linked into ntdll.so + wineserver via -lntsync_android. See
-        # _build_ntsync_android above.
-        _build_ntsync_android
-
-        # Regenerate the protocol headers from the patched protocol.def.
-        # patches/ntsync-combined.patch ships the regenerated files (created
-        # with this very tool), so this is a no-op safety net that also keeps
-        # the tree consistent if protocol.def is ever touched again.
-        ( cd "$TERMUX_PKG_SRCDIR" && perl tools/make_requests ) || true
+        _setup_ccache
 
         # --- Strip Termux's hardening flags (matches upstream behaviour) ------
         # Upstream LuKazuu removes these because they don't play nice with Wine's
