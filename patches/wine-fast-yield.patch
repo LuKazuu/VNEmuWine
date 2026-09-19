@@ -1,0 +1,32 @@
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -2394,6 +2394,29 @@
+  */
+ NTSTATUS WINAPI NtYieldExecution(void)
+ {
++    static int fast_yield = -1;
++
++    if (fast_yield < 0)
++    {
++        const char *e = getenv( "WINE_FAST_YIELD" );
++        fast_yield = e && atoi( e );
++    }
++    if (fast_yield)
++    {
++        /* On some hosts (notably Android/Bionic kernels, certain Wine-on-
++         * Wine configurations, and reduced-functionality schedulers like
++         * the Turnip/Zink Vulkan stacks used in Termux-Wine setups),
++         * sched_yield() takes a slow path through the scheduler that
++         * measurably hurts game frame pacing. A zero-time usleep(0) is
++         * semantically equivalent ("give up the rest of this time slice")
++         * on those kernels but takes the fast (no-syscall) path on most
++         * modern Linux schedulers. Default is OFF to preserve upstream
++         * behaviour; set WINE_FAST_YIELD=1 to opt in. Ported from
++         * The412Banner/proton-wine. */
++        usleep( 0 );
++        return STATUS_SUCCESS;
++    }
++
+ #ifdef HAVE_SCHED_YIELD
+ #ifdef RUSAGE_THREAD
+     struct rusage u1, u2;

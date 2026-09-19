@@ -225,14 +225,14 @@
   */
 --- a/dlls/wow64/syscall.c
 +++ b/dlls/wow64/syscall.c
-@@ -102,6 +102,7 @@
- static NTSTATUS (WINAPI *pBTCpuSetContext)(HANDLE,HANDLE,void *,void *);
- static void     (WINAPI *pBTCpuThreadInit)(void);
- static void     (WINAPI *pBTCpuSimulate)(void) __attribute__((used));
+@@ -118,6 +118,7 @@ void     (WINAPI *pBTCpuSimulate)(void);
+ void     (WINAPI *pBTCpuSimulate)(void);
+ void     (WINAPI *pBTCpuProcessTerm)( HANDLE, BOOL, NTSTATUS ) = NULL;
+ void     (WINAPI *pBTCpuThreadTerm)( HANDLE, LONG ) = NULL;
 +static NTSTATUS (WINAPI *pBTCpuSuspendLocalThread)(HANDLE,ULONG *);
- static void *   (WINAPI *p__wine_get_unix_opcode)(void);
- static void *   (WINAPI *pKiRaiseUserExceptionDispatcher)(void);
- void     (WINAPI *pBTCpuFlushInstructionCache2)( const void *, SIZE_T ) = NULL;
+ 
+ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, void *reserved )
+ {
 @@ -902,6 +903,25 @@
      return module;
  }

@@ -13,9 +13,9 @@ on:
         required: true
         default: 'wine'
       wine_version:
-        description: 'Wine version (e.g. 11.16) — only used when component=wine'
+        description: 'Wine version (e.g. 11.18) — only used when component=wine'
         type: string
-        default: '11.16'
+        default: '11.18'
       fexcore_ref:
         description: 'FEX-Emu/FEX git ref. Default: main'
         type: string
@@ -98,18 +98,48 @@ jobs:
           fi
 
       - name: Build libarm64ecfex.dll
+        # PPA-flavor build recipe — mirrors the FEX-Emu Launchpad PPA build
+        # (https://github.com/FEX-Emu/FEX-ppa/blob/main/deb_wine_base/rules).
+        # Differences vs the old RelWithDebInfo build:
+        #   - CMAKE_BUILD_TYPE=Release (not RelWithDebInfo) -> no debug info on C++ JIT
+        #   - CMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -g"      -> debug info only on C files
+        #                                                          (Musl CRT, softfloat, cephes, etc.)
+        #   - TUNE_ARCH=generic -DTUNE_CPU=generic          -> generic codegen, works on
+        #                                                          any ARM64 device kernel (no
+        #                                                          host-specific CPU features)
+        #   - ENABLE_JEMALLOC_GLIBC_ALLOC=False             -> matches PPA (mingw target)
+        #   - CXXFLAGS=-Wno-deprecated-enum-enum-conversion  -> matches PPA
+        # Net result: ~5 MB per DLL instead of ~37 MB.
         run: |
           export PATH="/opt/bylaws-llvm-mingw/bin:$PATH"
           cd fex && mkdir -p build_ec && cd build_ec
-          cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DENABLE_LTO=False -DMINGW_TRIPLE=arm64ec-w64-mingw32 -DBUILD_TESTING=False ..
-          cmake --build . --target arm64ecfex -j $(nproc)
+          CXXFLAGS="-Wno-deprecated-enum-enum-conversion" \
+          cmake -G Ninja -Wno-dev \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -g" \
+            -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake \
+            -DMINGW_TRIPLE=arm64ec-w64-mingw32 \
+            -DENABLE_LTO=False -DENABLE_ASSERTIONS=False -DBUILD_TESTING=False \
+            -DENABLE_JEMALLOC_GLIBC_ALLOC=False \
+            -DTUNE_ARCH=generic -DTUNE_CPU=generic \
+            ..
+          ninja -j $(nproc) arm64ecfex
 
       - name: Build libwow64fex.dll
         run: |
           export PATH="/opt/bylaws-llvm-mingw/bin:$PATH"
           cd fex && mkdir -p build_pe && cd build_pe
-          cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DENABLE_LTO=False -DMINGW_TRIPLE=aarch64-w64-mingw32 -DBUILD_TESTING=False ..
-          cmake --build . --target wow64fex -j $(nproc)
+          CXXFLAGS="-Wno-deprecated-enum-enum-conversion" \
+          cmake -G Ninja -Wno-dev \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -g" \
+            -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake \
+            -DMINGW_TRIPLE=aarch64-w64-mingw32 \
+            -DENABLE_LTO=False -DENABLE_ASSERTIONS=False -DBUILD_TESTING=False \
+            -DENABLE_JEMALLOC_GLIBC_ALLOC=False \
+            -DTUNE_ARCH=generic -DTUNE_CPU=generic \
+            ..
+          ninja -j $(nproc) wow64fex
 
       - name: Collect fexcore DLLs
         run: |
@@ -118,9 +148,18 @@ jobs:
           cp fex/build_pe/Bin/libwow64fex.dll fexcore-dlls/
           ls -lh fexcore-dlls/
 
-      # NOTE: The "Strip fexcore DLLs" step that used to live here has been
-      # REMOVED so the FEX binaries retain their debug info, matching the
-      # no-strip policy of the rest of the debug-friendly build.
+      # Strip FEX DLLs to drop the (small) C-only .debug_* sections and the
+      # symbol table. PPA flavor keeps them on purpose for crash backtraces,
+      # but the user asked for a smaller binary. The C-only DWARF is ~200KB
+      # per DLL — stripping brings each DLL from ~5MB to ~3.6MB. The release-
+      # optimised C++ JIT code (the bulk of the binary) has no debug info to
+      # strip because CMAKE_BUILD_TYPE=Release doesn't emit any.
+      - name: Strip fexcore DLLs
+        run: |
+          for dll in fexcore-dlls/*.dll; do
+            /opt/bylaws-llvm-mingw/bin/llvm-strip --strip-debug "$dll"
+          done
+          ls -lh fexcore-dlls/
 
       - name: Upload fexcore DLLs (artifact)
         uses: actions/upload-artifact@v4
@@ -212,9 +251,17 @@ jobs:
           find box64/build_pe -name "wowbox64.dll" -exec cp {} box64-dlls/ \;
           ls -lh box64-dlls/
 
-      # NOTE: The "Strip box64 DLL" step that used to live here has been REMOVED
-      # so the box64 binary retains its symbol table, matching the no-strip
-      # policy of the rest of the debug-friendly build.
+      # Strip wowbox64.dll — drops .symtab + .strtab + .debug_* sections.
+      # The box64 patch's printf_log() calls already provide runtime
+      # debug visibility via BOX64_LOG= env var, so the static .symtab
+      # is not needed for normal use. Brings wowbox64.dll from ~4.6MB
+      # down to ~1.8MB.
+      - name: Strip box64 DLL
+        run: |
+          for dll in box64-dlls/*.dll; do
+            /opt/mstorsjo-llvm-mingw/bin/llvm-strip --strip-debug "$dll"
+          done
+          ls -lh box64-dlls/
 
       - name: Upload box64 DLL (artifact)
         uses: actions/upload-artifact@v4

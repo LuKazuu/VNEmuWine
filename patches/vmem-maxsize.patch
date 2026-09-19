@@ -1,6 +1,6 @@
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -199,6 +199,8 @@
+@@ -195,6 +195,8 @@
  
  static void *host_addr_space_limit;  /* top of the host virtual address space */
  
@@ -9,10 +9,10 @@
  static struct file_view *arm64ec_view;
  
  ULONG_PTR user_space_wow_limit = 0;
-@@ -3727,6 +3729,14 @@
-     size = (char *)address_space_start - (char *)0x10000;
-     if (size && mmap_is_in_reserved_area( (void*)0x10000, size ) == 1)
-         anon_mmap_fixed( (void *)0x10000, size, PROT_READ | PROT_WRITE, 0 );
+@@ -3730,6 +3732,14 @@
+     free_ranges[0].base = (void *)0;
+     free_ranges[0].end = (void *)~0;
+     free_ranges_end = free_ranges + 1;
 +
 +    {
 +        const char *vmem_max_size_env = getenv( "WINEVMEMMAXSIZE" );
@@ -24,7 +24,7 @@
  }
  
  
-@@ -5131,7 +5141,8 @@
+@@ -5161,7 +5171,8 @@
  
      /* Round parameters to a page boundary */
  
