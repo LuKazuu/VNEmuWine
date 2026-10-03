@@ -1,8 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index da20084..c6738e7 100644
+index afc90f9..bb98cbd 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1339,6 +1339,9 @@ endif()
+@@ -1340,6 +1340,9 @@ endif()
  add_custom_target(generate_git_head_target
    DEPENDS "${BOX64_ROOT}/src/git_head.h"
  )
@@ -12,7 +12,7 @@ index da20084..c6738e7 100644
  add_custom_target(functions_list DEPENDS "${BOX64_ROOT}/src/wrapped/generated/functions_list.txt" "${BOX64_ROOT}/src/wrapped32/generated/functions_list.txt")
  add_dependencies(generate_git_head_target functions_list)
  
-@@ -1664,7 +1667,7 @@ if(WOW64 AND ARM_DYNAREC)
+@@ -1665,7 +1668,7 @@ if(WOW64 AND ARM_DYNAREC)
          TEST_COMMAND ""
          BUILD_ALWAYS ON
      )
@@ -20,7 +20,7 @@ index da20084..c6738e7 100644
 +    add_dependencies(wowbox64 generate_wow64_git_head_target)
  endif()
  
- if(NOT NOBOX64)
+ if(ARM64EC)
 diff --git a/src/os/emit_signal_wine.c b/src/os/emit_signal_wine.c
 index 6f8ee12..bbc61d1 100644
 --- a/src/os/emit_signal_wine.c
