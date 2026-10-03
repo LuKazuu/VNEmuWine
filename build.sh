@@ -36,6 +36,33 @@
 #     and .debug_line). Still tiny compared to a full -O0 -g build.
 #   - WINEDEBUG: works identically to upstream (it's a runtime flag).
 #   - Crash logs: readable function names + file:line. No gdb required.
+#
+# ---------------------------------------------------------------------------
+# NLS / gettext (translations) — enabled since r47
+# ---------------------------------------------------------------------------
+# `--with-gettext` makes Wine build the po/*.po translations with msgfmt and
+# let wrc embed them into the resource section of every module that carries
+# `#pragma makedep po` (winecfg, wineboot, shell32, comctl32, comdlg32,
+# regedit, taskmgr, wineserver errors, ...). Wine 11 does NOT link against
+# libintl at runtime: translations are pure resource data, so there is no new
+# runtime dependency and nothing to install on the phone.
+#
+# The translated UI language is selected from the Unix locale that the loader
+# reads at startup (see patches/bionic-locale-bypass.patch):
+#     LC_ALL  ->  LC_MESSAGES  ->  LANG      (env, in that order)
+#       -> ntdll/unix/env.c: user_locale -> user_lcid -> user_ui_language
+#       -> ntdll/locale.c: get_resource_lcids() -> language block in the .rsrc
+# Example: LC_ALL=ja_JP.UTF-8 -> LANGID list 0x0411/0x0011/0x0409 -> the
+# Japanese resource block (0x0011) that wrc embedded -> Japanese UI.
+#
+# NOTE: `--with-gettext` is a HARD requirement in configure: if msgfmt is not
+# found the build ABORTS ("gettext tools not found (or too old) ... This is an
+# error since --with-gettext was requested"). That is intentional: it makes it
+# impossible for CI to silently ship an English-only build. msgfmt comes from
+# the host `gettext` package inside the termux package-builder image
+# (scripts/setup-ubuntu.sh installs it) - it is NOT a TERMUX_PKG_BUILD_DEPENDS
+# entry, because a Termux/aarch64 gettext binary could not run on the x86_64
+# build host. gettext is build-time only; do not add it to TERMUX_PKG_DEPENDS.
 TERMUX_PKG_HOMEPAGE=https://www.winehq.org
 TERMUX_PKG_DESCRIPTION="A compatibility layer for running Windows programs (Hangover fork)"
 TERMUX_PKG_LICENSE="LGPL-2.1"
@@ -77,7 +104,7 @@ enable_tools=yes
 --without-ffmpeg
 --with-fontconfig
 --with-freetype
---without-gettext
+--with-gettext
 --with-gettextpo=no
 --without-gphoto
 --with-gnutls

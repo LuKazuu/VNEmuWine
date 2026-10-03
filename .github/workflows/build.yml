@@ -32,6 +32,10 @@ on:
         description: 'FFmpeg (codecs) — wine only'
         type: boolean
         default: true
+      enable_translations:
+        description: 'gettext/NLS translations (wine UI language follows LC_ALL). Off = smaller English-only build'
+        type: boolean
+        default: true
       upload_release:
         description: 'Upload to GitHub Releases'
         type: boolean
@@ -372,6 +376,10 @@ jobs:
           PKG_DIR="termux-packages/x11-packages/hangover-wine"
           [ "${{ github.event.inputs.enable_ffmpeg }}" = "true" ] && sed -i 's/--without-ffmpeg/--with-ffmpeg/' "$PKG_DIR/build.sh"
           [ "${{ github.event.inputs.enable_gstreamer }}" = "true" ] && sed -i 's/--without-gstreamer/--with-gstreamer/' "$PKG_DIR/build.sh"
+          # Translations (gettext/NLS). build.sh ships --with-gettext; only flip
+          # it off when the user explicitly asks for an English-only build.
+          # Anchored to the whole line so that --with-gettextpo is untouched.
+          [ "${{ github.event.inputs.enable_translations }}" = "false" ] && sed -i 's/^--with-gettext$/--without-gettext/' "$PKG_DIR/build.sh"
           EXTRA=""
           [ "${{ github.event.inputs.enable_gstreamer }}" = "true" ] && EXTRA+=", gstreamer, gst-plugins-base, gst-plugins-good, gst-plugins-bad, gst-plugins-ugly, gst-libav"
           [ "${{ github.event.inputs.enable_ffmpeg }}" = "true" ] && EXTRA+=", ffmpeg"
@@ -387,6 +395,15 @@ jobs:
           sudo systemctl start docker || true
           sudo docker pull ghcr.io/termux/package-builder:latest
           sudo docker images | grep package-builder
+
+      # --with-gettext is a hard configure requirement, so make sure the build
+      # container really has msgfmt before spending an hour on the full build.
+      - name: Verify gettext (msgfmt) inside builder image
+        if: github.event.inputs.enable_translations != 'false'
+        env:
+          TERMUX_DOCKER_IMAGE: ghcr.io/termux/package-builder:latest
+        run: |
+          sudo docker run --rm "$TERMUX_DOCKER_IMAGE" bash -lc 'command -v msgfmt && msgfmt --version | head -1'
 
       - name: Build
         env:
