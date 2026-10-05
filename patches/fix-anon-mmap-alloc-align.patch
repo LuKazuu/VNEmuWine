@@ -1,0 +1,20 @@
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -267,7 +267,7 @@ static inline BOOL use_aslr(void)
+ void *anon_mmap_fixed( void *start, size_t size, int prot, int flags )
+ {
+     assert( !((UINT_PTR)start & host_page_mask) );
+-    assert( !(size & host_page_mask) );
++    size = (size + host_page_mask) & ~host_page_mask;
+ 
+     return mmap( start, size, prot, MAP_PRIVATE | MAP_ANON | MAP_FIXED | flags, -1, 0 );
+ }
+@@ -275,7 +275,7 @@ void *anon_mmap_fixed( void *start, size_t size, int prot, int flags )
+ /* allocate anonymous mmap() memory at any address */
+ void *anon_mmap_alloc( size_t size, int prot )
+ {
+-    assert( !(size & host_page_mask) );
++    size = (size + host_page_mask) & ~host_page_mask;
+ 
+     return mmap( NULL, size, prot, MAP_PRIVATE | MAP_ANON, -1, 0 );
+ }
