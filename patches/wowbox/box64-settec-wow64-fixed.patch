@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index afc90f9..bb98cbd 100644
+index 4098f33e2..a7a445473 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -1340,6 +1340,9 @@ endif()
@@ -22,20 +22,24 @@ index afc90f9..bb98cbd 100644
  
  if(ARM64EC)
 diff --git a/src/os/emit_signal_wine.c b/src/os/emit_signal_wine.c
-index 6f8ee12..bbc61d1 100644
+index 43b251477..9658f4e32 100644
 --- a/src/os/emit_signal_wine.c
 +++ b/src/os/emit_signal_wine.c
-@@ -11,10 +11,17 @@
+@@ -15,6 +15,12 @@
+ #include "debug.h"
  #include "custommem.h"
  #include "wine/compiler.h"
- 
++
 +/* Implemented by the WOW64 CPU module.  Interpreter-generated exceptions
 +   must publish guest registers because there is no faulting JIT context from
 +   which BTCpuResetToConsistentState() can reconstruct them. */
 +void WowBox64StoreContext(x64emu_t* emu);
 +
- void EmitSignal(x64emu_t* emu, int sig, void* addr, int code)
- {
+ #ifdef BOX64EC
+ #include "box64ec.h"
+ #include "os.h"
+@@ -66,6 +72,8 @@ void EmitSignal(x64emu_t* emu, int sig, void* addr, int code)
+ #else
      EXCEPTION_RECORD rec;
  
 +    WowBox64StoreContext(emu);
@@ -43,7 +47,7 @@ index 6f8ee12..bbc61d1 100644
      switch (sig) {
          case X64_SIGILL:
              printf_log(LOG_DEBUG, "SIGILL at %p with code %d\n", addr, code);
-@@ -22,14 +29,19 @@ void EmitSignal(x64emu_t* emu, int sig, void* addr, int code)
+@@ -73,14 +81,19 @@ void EmitSignal(x64emu_t* emu, int sig, void* addr, int code)
              break;
          case X64_SIGSEGV:
              printf_log(LOG_DEBUG, "SIGSEGV at %p with code %d\n", addr, code);
@@ -66,7 +70,7 @@ index 6f8ee12..bbc61d1 100644
      rec.ExceptionAddress = addr;
      rec.NumberParameters = 0;
 diff --git a/src/os/os_wine.c b/src/os/os_wine.c
-index 123f057..ab902d3 100644
+index 4bb1fd7d1..578dc8244 100644
 --- a/src/os/os_wine.c
 +++ b/src/os/os_wine.c
 @@ -6,6 +6,7 @@
@@ -99,15 +103,8 @@ index 123f057..ab902d3 100644
      return NULL;
  }
  
-@@ -354,4 +362,4 @@ size_t FileSize(const char* filename)
- {
-     // TODO
-     return 0;
--}
-\ No newline at end of file
-+}
 diff --git a/wine/wow64/wowbox64.c b/wine/wow64/wowbox64.c
-index 7ee9fe4..804845e 100644
+index 7ee9fe474..5fdc162ac 100644
 --- a/wine/wow64/wowbox64.c
 +++ b/wine/wow64/wowbox64.c
 @@ -111,6 +111,8 @@ cpu_ext_t cpuext = {0};
@@ -416,7 +413,7 @@ index 7ee9fe4..804845e 100644
      return TRUE;
  }
 diff --git a/wine/wow64/wowbox64.def b/wine/wow64/wowbox64.def
-index 78a1c54..327d794 100644
+index 78a1c5464..327d794db 100644
 --- a/wine/wow64/wowbox64.def
 +++ b/wine/wow64/wowbox64.def
 @@ -6,14 +6,21 @@ EXPORTS
