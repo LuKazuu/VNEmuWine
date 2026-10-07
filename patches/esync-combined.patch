@@ -58,9 +58,9 @@
 +
 +/*
 + * Ported from The412Banner/proton-wine (Android patches directory) to
-+ * Wine 11.x.
++ * AndreRH/hangover wine 11.9.
 + *
-+ * This build has no fsync, so all `#include "fsync.h"` and `do_fsync()`
++ * Hangover has no fsync, so all `#include "fsync.h"` and `do_fsync()`
 + * references were removed; `do_esync()` is now gated purely on the
 + * WINEESYNC environment variable. The Android-only shm_utils.h include
 + * was dropped too -- it was unused.
@@ -1583,8 +1583,8 @@
 + * Copyright (C) 2018 Zebediah Figura
 + *
 + * Ported from The412Banner/proton-wine (Android patches directory) to
-+ * Wine 11.x. Removed the `#include "fsync.h"` and
-+ * the `&& !do_fsync()` clause in do_esync() because this build does not
++ * AndreRH/hangover wine 11.9. Removed the `#include "fsync.h"` and
++ * the `&& !do_fsync()` clause in do_esync() because Hangover does not
 + * ship fsync.
 + *
 + * v2 changes:

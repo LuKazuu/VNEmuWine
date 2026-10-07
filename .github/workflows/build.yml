@@ -289,7 +289,7 @@ jobs:
           for dll in box64-dlls/*.dll; do [ -f "$dll" ] && gh release upload "$TAG" "$dll" --repo "${{ github.repository }}" --clobber; done
 
   # ---------------------------------------------------------------------------
-  # Wine (full wine-termux .deb set) — depends on fexcore + box64
+  # Wine (full Hangover Wine .deb) — depends on fexcore + box64
   # Runs when: component=wine (fexcore + box64 are forced on by the upstream
   # job `if:` conditions; there is no way to build wine without them.)
   # ---------------------------------------------------------------------------
@@ -357,13 +357,9 @@ jobs:
 
       - name: Install our files
         run: |
-          PKG_DIR="termux-packages/x11-packages/wine-termux"
-          mkdir -p "$PKG_DIR"
+          PKG_DIR="termux-packages/x11-packages/hangover-wine"
+          rm -fv $PKG_DIR/*.patch $PKG_DIR/*.patch.beforehostbuild $PKG_DIR/build.sh
           cp -v build.sh "$PKG_DIR/build.sh"
-          # Subpackage definitions (separate .debs for FEX/box64 DLLs)
-          for s in patches/*.subpackage.sh; do
-            [ -f "$s" ] && cp -v "$s" "$PKG_DIR/$(basename "$s")"
-          done
           for p in patches/*.patch patches/*.patch.beforehostbuild; do
             [ -f "$p" ] && cp -v "$p" "$PKG_DIR/$(basename "$p")"
           done
@@ -371,13 +367,13 @@ jobs:
 
       - name: Inject version
         run: |
-          PKG_DIR="termux-packages/x11-packages/wine-termux"
+          PKG_DIR="termux-packages/x11-packages/hangover-wine"
           sed -i "s|__WINE_VERSION__|${{ steps.ver.outputs.wine_version }}|g" "$PKG_DIR/build.sh"
           sed -i "s|__WINE_SHA256__|${{ env.wine_sha }}|g" "$PKG_DIR/build.sh"
 
       - name: Codec toggles
         run: |
-          PKG_DIR="termux-packages/x11-packages/wine-termux"
+          PKG_DIR="termux-packages/x11-packages/hangover-wine"
           [ "${{ github.event.inputs.enable_ffmpeg }}" = "true" ] && sed -i 's/--without-ffmpeg/--with-ffmpeg/' "$PKG_DIR/build.sh"
           [ "${{ github.event.inputs.enable_gstreamer }}" = "true" ] && sed -i 's/--without-gstreamer/--with-gstreamer/' "$PKG_DIR/build.sh"
           # Translations (gettext/NLS). build.sh ships --with-gettext; only flip
@@ -414,7 +410,7 @@ jobs:
           TERMUX_DOCKER_IMAGE: ghcr.io/termux/package-builder:latest
         run: |
           cd termux-packages
-          sudo -E ./scripts/run-docker.sh ./build-package.sh -a aarch64 -I x11-packages/wine-termux 2>&1 | tee build.log || {
+          sudo -E ./scripts/run-docker.sh ./build-package.sh -a aarch64 -I x11-packages/hangover-wine 2>&1 | tee build.log || {
             tail -200 build.log; exit 1; }
 
       - name: Collect
@@ -424,7 +420,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: vnemuwine-aarch64-${{ steps.ver.outputs.wine_version }}
+          name: hangover-wine-aarch64-${{ steps.ver.outputs.wine_version }}
           path: artifacts/
           retention-days: 30
           if-no-files-found: warn
@@ -435,7 +431,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VER="${{ steps.ver.outputs.wine_version }}"
-          TAG="vnemuwine-${VER}-r${{ github.run_number }}"
-          echo "VNEmuWine ${VER} (Wine ${VER} for Termux)" > /tmp/notes.md
-          gh release create "$TAG" --title "VNEmuWine ${VER}" --notes-file /tmp/notes.md --repo "${{ github.repository }}" || true
+          TAG="hangover-wine-${VER}-r${{ github.run_number }}"
+          echo "Hangover Wine ${VER}" > /tmp/notes.md
+          gh release create "$TAG" --title "Hangover Wine ${VER}" --notes-file /tmp/notes.md --repo "${{ github.repository }}" || true
           for deb in artifacts/*.deb; do [ -f "$deb" ] && gh release upload "$TAG" "$deb" --repo "${{ github.repository }}" --clobber; done

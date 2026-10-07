@@ -1,4 +1,4 @@
-# build.sh — Termux package recipe for wine-termux (BALANCED build)
+# build.sh — Termux package recipe for Hangover Wine (BALANCED build)
 #
 # Goal: IDENTICAL runtime performance to upstream LuKazuu/WinHubWine (which
 # uses -Oz + llvm-strip), BUT keep enough symbol info that:
@@ -64,7 +64,7 @@
 # entry, because a Termux/aarch64 gettext binary could not run on the x86_64
 # build host. gettext is build-time only; do not add it to TERMUX_PKG_DEPENDS.
 TERMUX_PKG_HOMEPAGE=https://www.winehq.org
-TERMUX_PKG_DESCRIPTION="A compatibility layer for running Windows programs (wine-termux build)"
+TERMUX_PKG_DESCRIPTION="A compatibility layer for running Windows programs (Hangover fork)"
 TERMUX_PKG_LICENSE="LGPL-2.1"
 TERMUX_PKG_LICENSE_FILE="LICENSE, COPYING.LIB"
 TERMUX_PKG_MAINTAINER="@LuKazuu"
@@ -89,10 +89,10 @@ ac_cv_header_sys_eventfd_h=yes
 ac_cv_path_GRADLE=no
 enable_wineandroid_drv=no
 enable_tools=yes
---prefix=$TERMUX_PREFIX/opt/wine-termux
---exec-prefix=$TERMUX_PREFIX/opt/wine-termux
---includedir=$TERMUX_PREFIX/opt/wine-termux/include
---libdir=$TERMUX_PREFIX/opt/wine-termux/lib
+--prefix=$TERMUX_PREFIX/opt/hangover-wine
+--exec-prefix=$TERMUX_PREFIX/opt/hangover-wine
+--includedir=$TERMUX_PREFIX/opt/hangover-wine/include
+--libdir=$TERMUX_PREFIX/opt/hangover-wine/lib
 --with-wine-tools=$TERMUX_PKG_HOSTBUILD_DIR
 --enable-nls
 --disable-tests
@@ -222,11 +222,11 @@ termux_step_make() {
 termux_step_make_install() {
         make -j $TERMUX_PKG_MAKE_PROCESSES install
         mkdir -p $TERMUX_PREFIX/bin
-        cat << EOF > $TERMUX_PREFIX/bin/wine-termux
+        cat << EOF > $TERMUX_PREFIX/bin/hangover-wine
 #!$TERMUX_PREFIX/bin/env sh
-exec $TERMUX_PREFIX/opt/wine-termux/bin/wine "\$@"
+exec $TERMUX_PREFIX/opt/hangover-wine/bin/wine "\$@"
 EOF
-        chmod +x $TERMUX_PREFIX/bin/wine-termux
+        chmod +x $TERMUX_PREFIX/bin/hangover-wine
 }
 termux_step_post_make_install() {
         local _dll_dir="${TERMUX_PKG_BUILDER_DIR}/fex-dlls"
@@ -237,19 +237,19 @@ termux_step_post_make_install() {
         for _dll in wowbox64.dll libwow64fex.dll libarm64ecfex.dll; do
                 if [ -f "$_dll_dir/$_dll" ]; then
                         install -Dm644 "$_dll_dir/$_dll" \
-                                "$TERMUX_PREFIX"/opt/wine-termux/lib/wine/aarch64-windows/$_dll
+                                "$TERMUX_PREFIX"/opt/hangover-wine/lib/wine/aarch64-windows/$_dll
                 else
                         echo "ERROR: $_dll not found" >&2; exit 1
                 fi
         done
-        mkdir -p "$TERMUX_PREFIX"/share/doc/wine-termux \
-                 "$TERMUX_PREFIX"/share/doc/wine-termux-libarm64ecfex \
-                 "$TERMUX_PREFIX"/share/doc/wine-termux-libwow64fex \
-                 "$TERMUX_PREFIX"/share/doc/wine-termux-wowbox64
-        cp "$TERMUX_PKG_SRCDIR/LICENSE" "$TERMUX_PREFIX"/share/doc/wine-termux/copyright
-        curl -L "https://raw.githubusercontent.com/FEX-Emu/FEX/main/LICENSE" -o "$TERMUX_PREFIX"/share/doc/wine-termux-libarm64ecfex/copyright
-        cp "$TERMUX_PREFIX"/share/doc/wine-termux-libarm64ecfex/copyright "$TERMUX_PREFIX"/share/doc/wine-termux-libwow64fex/copyright
-        curl -L "https://raw.githubusercontent.com/ptitSeb/box64/main/LICENSE" -o "$TERMUX_PREFIX"/share/doc/wine-termux-wowbox64/copyright
+        mkdir -p "$TERMUX_PREFIX"/share/doc/hangover \
+                 "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex \
+                 "$TERMUX_PREFIX"/share/doc/hangover-libwow64fex \
+                 "$TERMUX_PREFIX"/share/doc/hangover-wowbox64
+        cp "$TERMUX_PKG_SRCDIR/LICENSE" "$TERMUX_PREFIX"/share/doc/hangover/copyright
+        curl -L "https://raw.githubusercontent.com/FEX-Emu/FEX/main/LICENSE" -o "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex/copyright
+        cp "$TERMUX_PREFIX"/share/doc/hangover-libarm64ecfex/copyright "$TERMUX_PREFIX"/share/doc/hangover-libwow64fex/copyright
+        curl -L "https://raw.githubusercontent.com/ptitSeb/box64/main/LICENSE" -o "$TERMUX_PREFIX"/share/doc/hangover-wowbox64/copyright
 
         # --- LIGHTWEIGHT SIZE REDUCTION (NO STRIP) ---------------------------
         # We DELETE the same dev artifacts as upstream (static libs, def files,
@@ -262,7 +262,7 @@ termux_step_post_make_install() {
         # By skipping strip, you keep both, so `winedbg --gdb` / kernel
         # segfault logs / WINEDEBUG=+seh all show real names + file:line.
         echo "Removing dev artifacts (static libs, headers, man pages)..."
-        find "$TERMUX_PREFIX/opt/wine-termux" -type f \( -name "*.a" -o -name "*.lib" -o -name "*.def" \) -delete
-        rm -rf "$TERMUX_PREFIX/opt/wine-termux/include" "$TERMUX_PREFIX/opt/wine-termux/share/man"
+        find "$TERMUX_PREFIX/opt/hangover-wine" -type f \( -name "*.a" -o -name "*.lib" -o -name "*.def" \) -delete
+        rm -rf "$TERMUX_PREFIX/opt/hangover-wine/include" "$TERMUX_PREFIX/opt/hangover-wine/share/man"
         echo "Balanced install complete (no strip, -Oz -g1, full perf)."
 }
