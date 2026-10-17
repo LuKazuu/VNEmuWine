@@ -1,6 +1,6 @@
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -195,6 +195,8 @@
+@@ -187,6 +187,8 @@ static void *working_set_limit   = (void *)0x7fff0000;
  
  static void *host_addr_space_limit;  /* top of the host virtual address space */
  
@@ -9,10 +9,10 @@
  static struct file_view *arm64ec_view;
  
  ULONG_PTR user_space_wow_limit = 0;
-@@ -3730,6 +3732,14 @@
-     free_ranges[0].base = (void *)0;
-     free_ranges[0].end = (void *)~0;
-     free_ranges_end = free_ranges + 1;
+@@ -3411,6 +3413,14 @@ void virtual_init(void)
+     assert( view_block_start != MAP_FAILED );
+     wine_rb_init( &views_tree, compare_view );
+     kernel_writewatch_init();
 +
 +    {
 +        const char *vmem_max_size_env = getenv( "WINEVMEMMAXSIZE" );
@@ -24,7 +24,7 @@
  }
  
  
-@@ -5161,7 +5171,8 @@
+@@ -4823,7 +4833,8 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
  
      /* Round parameters to a page boundary */
  
