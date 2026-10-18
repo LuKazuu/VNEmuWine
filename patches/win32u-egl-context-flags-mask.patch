@@ -1,0 +1,35 @@
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -1512,11 +1512,18 @@
+     EGLContext host_share = share ? share->host_context : NULL;
+     const struct opengl_funcs *funcs = &display_funcs;
+     const struct egl_platform *egl = &display_egl;
+-    EGLint err, attribs[16], *attr = attribs;
++    EGLint err, attribs[16], *attr = attribs, flags;
+     struct opengl_context *context;
+ 
+     TRACE( "attrs %s, share %p\n", debugstr_opengl_context_attrs( attrs ), share );
+ 
++    /* The attributes of internal contexts come from GL queries, which may report bits that
++     * EGL_KHR_create_context doesn't define (e.g. GL_CONTEXT_FLAG_NO_ERROR_BIT, set by
++     * MESA_NO_ERROR=1) and that make eglCreateContext fail with EGL_BAD_ATTRIBUTE. */
++    flags = attrs->flags & (EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR |
++                            EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR |
++                            EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR);
++
+     if (attrs->major != -1)
+     {
+         *attr++ = EGL_CONTEXT_MAJOR_VERSION_KHR;
+@@ -1527,10 +1534,10 @@
+         *attr++ = EGL_CONTEXT_MINOR_VERSION_KHR;
+         *attr++ = attrs->minor;
+     }
+-    if (attrs->flags)
++    if (flags)
+     {
+         *attr++ = EGL_CONTEXT_FLAGS_KHR;
+-        *attr++ = attrs->flags;
++        *attr++ = flags;
+     }
+     if (attrs->profile)
+     {
