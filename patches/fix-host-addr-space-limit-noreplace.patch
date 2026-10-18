@@ -1,0 +1,27 @@
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -2368,14 +2368,22 @@
+     return (void *)0x7ffffe000000;
+ #elif defined _WIN64
+     UINT_PTR addr = (UINT_PTR)1 << 63;
++    unsigned int flags = MAP_PRIVATE | MAP_ANON;
+ 
++#ifdef MAP_FIXED_NOREPLACE
++    flags |= MAP_FIXED_NOREPLACE;
++#endif
++
++    /* Kernels without MAP_FIXED_NOREPLACE support (older than 4.17) treat the address as a
++     * hint and return a different address when it is out of range, so use mmap() directly
++     * and check the returned address instead of relying on anon_mmap_tryfixed() EEXIST. */
+     while (addr >> 32)
+     {
+-        void *ret = anon_mmap_tryfixed( (void *)addr, host_page_size, PROT_NONE, 0 );
++        void *ret = mmap( (void *)addr, host_page_size, PROT_NONE, flags, -1, 0 );
+         if (ret != MAP_FAILED)
+         {
+             munmap( ret, host_page_size );
+-            break;
++            if (ret >= (void *)addr) break;
+         }
+         else if (errno == EEXIST) break;
+         addr >>= 1;
