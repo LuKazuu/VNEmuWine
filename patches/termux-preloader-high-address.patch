@@ -1,0 +1,40 @@
+--- a/configure.ac
++++ b/configure.ac
+@@ -1034,7 +1034,16 @@
+     enable_wineandroid_drv=${enable_wineandroid_drv:-yes}
+     WINE_TRY_CFLAGS([-Wl,-z,defs],[UNIXLDFLAGS="$UNIXLDFLAGS -Wl,-z,defs"])
+     WINE_TRY_CFLAGS([-fPIC -Wl,--export-dynamic],[WINELOADER_LDFLAGS="-Wl,--export-dynamic"])
+-    WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,-Ttext=0x7d400000"
++    case $HOST_ARCH in
++      aarch64)
++        dnl The 64-bit preloader reserves the whole low 8G, so it must be linked above it.
++        dnl Stay below 39 bits of address space as AArch64 kernels may be limited to that.
++        WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,-Ttext=0x7d7d000000" ;;
++      x86_64)
++        WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,-Ttext=0x7d7d00000000" ;;
++      *)
++        WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,-Ttext=0x7d400000" ;;
++    esac
+     WINE_TRY_CFLAGS([-Wl,--rosegment], [WINEPRELOADER_LDFLAGS="$WINEPRELOADER_LDFLAGS -Wl,--rosegment"])
+ 
+     WINE_CHECK_SONAME(GLESv2,glFlush)
+--- a/configure
++++ b/configure
+@@ -12570,7 +12570,16 @@
+ then :
+   WINELOADER_LDFLAGS="-Wl,--export-dynamic"
+ fi
+-    WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,-Ttext=0x7d400000"
++    case $HOST_ARCH in
++      aarch64)
++        # The 64-bit preloader reserves the whole low 8G, so it must be linked above it.
++        # Stay below 39 bits of address space as AArch64 kernels may be limited to that.
++        WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,-Ttext=0x7d7d000000" ;;
++      x86_64)
++        WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,-Ttext=0x7d7d00000000" ;;
++      *)
++        WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,-Ttext=0x7d400000" ;;
++    esac
+     { printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking whether the compiler supports -Wl,--rosegment" >&5
+ printf %s "checking whether the compiler supports -Wl,--rosegment... " >&6; }
+ if test ${ac_cv_cflags__Wl___rosegment+y}
